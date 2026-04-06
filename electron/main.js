@@ -1,31 +1,20 @@
 const { app, BrowserWindow, ipcMain, Menu, shell, nativeImage } = require('electron')
 const path = require('path')
-const { spawn } = require('child_process')
 const isDev = require('electron-is-dev')
 const { createTray } = require('./tray')
 
 let mainWindow
-let serverProcess
 let tray = null
 
 function startExpressServer() {
-  const serverPath = path.join(__dirname, '../server/index.js')
-  serverProcess = spawn('node', [serverPath], {
-    env: { ...process.env, NODE_ENV: isDev ? 'development' : 'production' },
-    stdio: 'pipe'
-  })
-
-  serverProcess.stdout.on('data', (data) => {
-    console.log('[Server]', data.toString().trim())
-  })
-
-  serverProcess.stderr.on('data', (data) => {
-    console.error('[Server Error]', data.toString().trim())
-  })
-
-  serverProcess.on('exit', (code) => {
-    console.log(`[Server] Exited with code ${code}`)
-  })
+  // Run Express inline inside Electron — no child process needed
+  // This works both in dev and in packaged .app
+  try {
+    const serverApp = require('../server/index.js')
+    console.log('[Server] Express started inline')
+  } catch (err) {
+    console.error('[Server] Failed to start inline:', err.message)
+  }
 }
 
 function createWindow() {
@@ -441,7 +430,6 @@ app.whenReady().then(() => {
 // macOS: minimize to tray instead of quitting
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
-    if (serverProcess) serverProcess.kill()
     app.quit()
   }
 })
@@ -451,5 +439,4 @@ app.on('before-quit', () => {
     const scheduler = require('../src/services/scheduler-main')
     scheduler.stop()
   } catch {}
-  if (serverProcess) serverProcess.kill()
 })
