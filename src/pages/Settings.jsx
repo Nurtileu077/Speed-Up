@@ -5,7 +5,9 @@ const SETTINGS_FIELDS = [
   { section: 'Bitrix24', fields: [
     { key: 'BITRIX_PORTAL', label: 'Портал Bitrix24', placeholder: 'https://nobilis.bitrix24.kz', type: 'text' },
     { key: 'BITRIX_WEBHOOK', label: 'Вебхук URL', placeholder: 'https://nobilis.bitrix24.kz/rest/1/xxxxx/', type: 'password' },
-    { key: 'BITRIX_USER_ID', label: 'ID менеджера в Bitrix24', placeholder: '1', type: 'text' }
+    { key: 'BITRIX_USER_ID', label: 'ID менеджера в Bitrix24', placeholder: '1', type: 'text' },
+    { key: 'CRM_TYPE', label: 'Тип CRM', placeholder: 'deal', type: 'select',
+      options: [{ value: 'deal', label: 'Сделки (Deals)' }, { value: 'lead', label: 'Лиды (Leads)' }] }
   ]},
   { section: 'Wazzup (WhatsApp)', fields: [
     { key: 'WAZZUP_API_KEY', label: 'API Key', placeholder: 'your_wazzup_api_key', type: 'password' },
@@ -137,7 +139,7 @@ export default function Settings() {
                 {section}
               </h2>
               <div className="flex flex-col gap-4">
-                {fields.map(({ key, label, placeholder, type }) => (
+                {fields.map(({ key, label, placeholder, type, options }) => (
                   <div key={key}>
                     <label className="label">{label}</label>
                     {type === 'password' ? (
@@ -147,6 +149,17 @@ export default function Settings() {
                         placeholder={placeholder}
                         disabled={saving}
                       />
+                    ) : type === 'select' ? (
+                      <select
+                        value={values[key] || options[0]?.value || ''}
+                        onChange={e => handleChange(key, e.target.value)}
+                        disabled={saving}
+                        className="input text-sm bg-slate-800"
+                      >
+                        {options.map(o => (
+                          <option key={o.value} value={o.value}>{o.label}</option>
+                        ))}
+                      </select>
                     ) : (
                       <input
                         type="text"

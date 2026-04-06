@@ -10,26 +10,24 @@ function configure(settings) {
 
 async function call(method, params = {}) {
   if (!webhookUrl) throw new Error('Bitrix24 webhook URL not configured. Go to Settings.')
-
   const url = `${webhookUrl}/${method}`
   const response = await axios.post(url, params, { timeout: 15000 })
-
   if (response.data?.error) {
     throw new Error(`Bitrix24: ${response.data.error} — ${response.data.error_description || ''}`)
   }
-
   return response.data?.result
 }
 
-// ─── Leads ────────────────────────────────────────────────────
+// ─── Deals (Сделки) ───────────────────────────────────────────
 
-async function getLeads(filter = {}) {
-  return call('crm.lead.list', {
-    filter,
+async function getDeals(filter = {}) {
+  return call('crm.deal.list', {
+    filter: { '!STAGE_ID': ['WON', 'LOSE'], ...filter },
     select: [
-      'ID', 'TITLE', 'NAME', 'LAST_NAME', 'PHONE', 'EMAIL',
-      'SOURCE_ID', 'STATUS_ID', 'ASSIGNED_BY_ID',
+      'ID', 'TITLE', 'CONTACT_ID', 'COMPANY_ID',
+      'SOURCE_ID', 'STAGE_ID', 'ASSIGNED_BY_ID',
       'DATE_CREATE', 'DATE_MODIFY', 'COMMENTS',
+      'OPPORTUNITY', 'CURRENCY_ID',
       'UF_*'
     ],
     order: { DATE_CREATE: 'DESC' },
@@ -37,8 +35,72 @@ async function getLeads(filter = {}) {
   })
 }
 
-async function getNewLeads() {
-  return getLeads({ STATUS_ID: 'NEW' })
+async function getNewDeals(assignedUserId) {
+  const filter = { '!STAGE_ID': ['WON', 'LOSE'] }
+  if (assignedUserId) filter.ASSIGNED_BY_ID = assignedUserId
+  return getDeals(filter)
+}
+
+async function getDeal(dealId) {
+  return call('crm.deal.get', { id: dealId })
+}
+
+async function updateDeal(dealId, fields) {
+  return call('crm.deal.update', { id: dealId, fields })
+}
+
+async function getDealContact(contactId) {
+  if (!contactId) return null
+  try {
+    return await call('crm.contact.get', { id: contactId })
+  } catch { return null }
+}
+
+async function getDealPhone(deal) {
+  // Try direct phone on deal first (custom fields)
+  if (deal.PHONE) {
+    if (Array.isArray(deal.PHONE)) return deal.PHONE[0]?.VALUE || null
+    return deal.PHONE
+  }
+  // Fetch from linked contact
+  if (deal.CONTACT_ID) {
+    const contact = await getDealContact(deal.CONTACT_ID)
+    if (contact?.PHONE) {
+      if (Array.isArray(contact.PHONE)) return contact.PHONE[0]?.VALUE || null
+      return contact.PHONE
+    }
+  }
+  return null
+}
+
+async function getDealName(deal) {
+  if (deal.CONTACT_ID) {
+    try {
+      const contact = await getDealContact(deal.CONTACT_ID)
+      if (contact) {
+        const parts = [contact.NAME, contact.LAST_NAME].filter(Boolean)
+        if (parts.length > 0) return parts.join(' ')
+      }
+    } catch {}
+  }
+  return deal.TITLE || `Сделка #${deal.ID}`
+}
+
+// ─── Leads (Лиды) — kept for backward compat ──────────────────
+
+async function getLeads(filter = {}) {
+  return call('crm.lead.list', {
+    filter,
+    select: ['ID', 'TITLE', 'NAME', 'LAST_NAME', 'PHONE', 'SOURCE_ID', 'STATUS_ID', 'ASSIGNED_BY_ID', 'DATE_CREATE', 'DATE_MODIFY', 'COMMENTS', 'UF_*'],
+    order: { DATE_CREATE: 'DESC' },
+    start: 0
+  })
+}
+
+async function getNewLeads(assignedUserId) {
+  const filter = { STATUS_ID: 'NEW' }
+  if (assignedUserId) filter.ASSIGNED_BY_ID = assignedUserId
+  return getLeads(filter)
 }
 
 async function getLead(leadId) {
@@ -49,35 +111,26 @@ async function updateLead(leadId, fields) {
   return call('crm.lead.update', { id: leadId, fields })
 }
 
-async function getLeadActivities(leadId) {
-  return call('crm.activity.list', {
-    filter: { ENTITY_TYPE_ID: 1, ENTITY_ID: leadId },
-    order: { CREATED: 'DESC' }
-  })
+// ─── Universal update (auto-detect lead vs deal) ──────────────
+
+async function updateEntity(entityId, fields, entityType = 'deal') {
+  if (entityType === 'lead') return updateLead(entityId, fields)
+  return updateDeal(entityId, fields)
 }
 
 // ─── Tasks ────────────────────────────────────────────────────
 
 async function getTasks(userId, filter = {}) {
   return call('tasks.task.list', {
-    filter: {
-      RESPONSIBLE_ID: userId,
-      STATUS: [2, 3],
-      ...filter
-    },
+    filter: { RESPONSIBLE_ID: userId, STATUS: [2, 3], ...filter },
     select: ['ID', 'TITLE', 'DEADLINE', 'DESCRIPTION', 'STATUS', 'UF_CRM_TASK', 'CREATED_DATE'],
     order: { DEADLINE: 'ASC' }
   })
 }
 
 async function getOverdueTasks(userId) {
-  const now = new Date().toISOString()
   return call('tasks.task.list', {
-    filter: {
-      RESPONSIBLE_ID: userId,
-      '<=DEADLINE': now,
-      STATUS: [2, 3]
-    },
+    filter: { RESPONSIBLE_ID: userId, '<=DEADLINE': new Date().toISOString(), STATUS: [2, 3] },
     select: ['ID', 'TITLE', 'DEADLINE', 'UF_CRM_TASK'],
     order: { DEADLINE: 'ASC' }
   })
@@ -91,36 +144,26 @@ async function updateTask(taskId, data) {
   return call('tasks.task.update', { taskId, fields: data })
 }
 
-async function completeTask(taskId) {
-  return call('tasks.task.complete', { taskId })
-}
-
 // ─── Telephony ────────────────────────────────────────────────
 
-async function initiateCall(leadId, phone, userId, callerId) {
+async function initiateCall(entityId, phone, userId, entityType = 'deal') {
   return call('telephony.externalcall.register', {
     USER_ID: userId || '1',
     PHONE_NUMBER: phone,
     CALL_START_DATE: new Date().toISOString(),
     CRM_CREATE: 'N',
-    CRM_ENTITY_TYPE: 'LEAD',
-    CRM_ENTITY_ID: leadId,
+    CRM_ENTITY_TYPE: entityType.toUpperCase(),
+    CRM_ENTITY_ID: entityId,
     SHOW: 'Y',
-    LINE_NUMBER: callerId || '',
-    TYPE: 1 // outgoing
+    TYPE: 1
   })
 }
 
 async function finishCall(callId, status, duration) {
   const statusMap = {
-    connected: 200,
-    no_answer: 304,
-    busy: 486,
-    unavailable: 480,
-    rejected: 603,
-    rejected_call: 603
+    connected: 200, no_answer: 304, busy: 486,
+    unavailable: 480, rejected: 603, rejected_call: 603
   }
-
   return call('telephony.externalcall.finish', {
     CALL_ID: callId,
     DURATION: duration || 0,
@@ -128,44 +171,36 @@ async function finishCall(callId, status, duration) {
   })
 }
 
-/**
- * Get call recording URL.
- * For SIP/Beeline connector — the recording URL comes directly in the webhook body (RECORD_URL).
- * Fallback: search crm.activity.list for a call activity with the matching call ID.
- */
 async function getCallRecording(callId) {
-  // Try to find the recording via CRM activity
-  // The call activity has RECORD_URL field when recording is available
   try {
     const activities = await call('crm.activity.list', {
-      filter: {
-        TYPE_ID: 2,          // 2 = Phone call
-        SETTINGS: { CALL_ID: callId }
-      },
-      select: ['ID', 'SETTINGS', 'SUBJECT']
+      filter: { TYPE_ID: 2, SETTINGS: { CALL_ID: callId } },
+      select: ['ID', 'SETTINGS']
     })
-
     if (Array.isArray(activities) && activities.length > 0) {
-      const settings = activities[0].SETTINGS
-      if (settings?.RECORD_URL) return settings.RECORD_URL
-      if (settings?.record_url) return settings.record_url
+      return activities[0].SETTINGS?.RECORD_URL || null
     }
-  } catch (err) {
-    console.warn('[Bitrix] getCallRecording via activity failed:', err.message)
-  }
-
-  return null // Recording URL comes from webhook body (RECORD_URL field)
+  } catch {}
+  return null
 }
 
-// ─── Timeline ─────────────────────────────────────────────────
+// ─── Timeline Comments ────────────────────────────────────────
 
-async function addTimelineComment(leadId, text) {
+async function addTimelineComment(entityId, text, entityType = 'deal') {
   return call('crm.timeline.comment.add', {
     fields: {
-      ENTITY_ID: leadId,
-      ENTITY_TYPE: 'lead',
+      ENTITY_ID: entityId,
+      ENTITY_TYPE: entityType, // 'deal' or 'lead'
       COMMENT: text
     }
+  })
+}
+
+async function getLeadActivities(entityId, entityTypeId = 2) {
+  // entityTypeId: 1=lead, 2=deal
+  return call('crm.activity.list', {
+    filter: { ENTITY_TYPE_ID: entityTypeId, ENTITY_ID: entityId },
+    order: { CREATED: 'DESC' }
   })
 }
 
@@ -184,15 +219,15 @@ async function getCurrentUser() {
   return call('profile')
 }
 
-function getPortalUrl() {
-  return portalUrl
-}
+function getPortalUrl() { return portalUrl }
 
 module.exports = {
   configure, call,
-  getLeads, getNewLeads, getLead, updateLead, getLeadActivities,
-  getTasks, getOverdueTasks, createTask, updateTask, completeTask,
+  getDeals, getNewDeals, getDeal, updateDeal, getDealPhone, getDealName, getDealContact,
+  getLeads, getNewLeads, getLead, updateLead,
+  updateEntity,
+  getTasks, getOverdueTasks, createTask, updateTask,
   initiateCall, finishCall, getCallRecording,
-  addTimelineComment,
+  addTimelineComment, getLeadActivities,
   testConnection, getCurrentUser, getPortalUrl
 }

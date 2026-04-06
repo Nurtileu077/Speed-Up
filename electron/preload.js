@@ -28,7 +28,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
   queue: {
     getNext: () => ipcRenderer.invoke('queue:getNext'),
     refresh: () => ipcRenderer.invoke('queue:refresh'),
-    getStats: () => ipcRenderer.invoke('queue:getStats')
+    getStats: () => ipcRenderer.invoke('queue:getStats'),
+    getBatch: (count) => ipcRenderer.invoke('queue:getBatch', count)
   },
 
   // Wazzup/WhatsApp

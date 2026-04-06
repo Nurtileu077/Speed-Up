@@ -9,20 +9,24 @@ function configure(bitrixClient, dbClient) {
   db = dbClient
 }
 
-function calcLeadPriority(lead, attemptCount, lastAttempt) {
+function getCrmType() {
+  const settings = db?.getSettings() || {}
+  return settings.CRM_TYPE || 'deal' // 'deal' | 'lead'
+}
+
+function calcPriority(entity, attemptCount, lastAttempt) {
   const now = new Date()
-  const createdAt = new Date(lead.DATE_CREATE)
+  const createdAt = new Date(entity.DATE_CREATE)
   const ageMinutes = (now - createdAt) / 60000
-  const today = now.toDateString()
   const yesterday = new Date(now - 86400000).toDateString()
 
   if (ageMinutes < 30 && attemptCount === 0) return 100
-  if (createdAt.toDateString() === today && attemptCount < 3) return 60
+  if (createdAt.toDateString() === now.toDateString() && attemptCount < 3) return 60
 
   if (lastAttempt) {
     const lastDate = new Date(lastAttempt.called_at).toDateString()
-    const noAnswerResults = ['no_answer', 'busy', 'unavailable', 'rejected', 'rejected_call']
-    if (lastDate === yesterday && noAnswerResults.includes(lastAttempt.result)) return 50
+    const noAnswers = ['no_answer', 'busy', 'unavailable', 'rejected', 'rejected_call']
+    if (lastDate === yesterday && noAnswers.includes(lastAttempt.result)) return 50
   }
 
   if (attemptCount > 0 && attemptCount < 6) return 30
@@ -38,73 +42,96 @@ function calcTaskPriority(task) {
   return 30
 }
 
-function getLeadPhone(lead) {
-  if (!lead.PHONE) return null
-  if (Array.isArray(lead.PHONE)) return lead.PHONE[0]?.VALUE || null
-  return lead.PHONE
+function getPhone(entity) {
+  if (!entity.PHONE) return null
+  if (Array.isArray(entity.PHONE)) return entity.PHONE[0]?.VALUE || null
+  return entity.PHONE
 }
 
-function getLeadName(lead) {
-  const parts = [lead.NAME, lead.LAST_NAME].filter(Boolean)
-  return parts.length > 0 ? parts.join(' ') : lead.TITLE || `Лид #${lead.ID}`
+function getName(entity) {
+  const parts = [entity.NAME, entity.LAST_NAME].filter(Boolean)
+  if (parts.length > 0) return parts.join(' ')
+  return entity.TITLE || `#${entity.ID}`
 }
 
 async function buildQueue() {
   if (!bitrix || !db) throw new Error('Queue not configured')
 
-  const leads = []
+  const crmType = getCrmType()
+  const settings = db.getSettings()
+  const userId = settings.BITRIX_USER_ID
 
-  // Source 1: New leads from Bitrix24 funnels
+  const items = []
+
+  // ── Source 1: New deals/leads from Bitrix24 ───────────────────
   try {
-    const newLeads = await bitrix.getNewLeads()
-    if (Array.isArray(newLeads)) {
-      for (const lead of newLeads) {
-        const attemptCount = db.getAttemptCount(lead.ID)
-        if (attemptCount >= 6) continue
+    let entities = []
+    if (crmType === 'deal') {
+      entities = await bitrix.getNewDeals(userId) || []
+    } else {
+      entities = await bitrix.getNewLeads(userId) || []
+    }
 
-        const lastAttempt = db.getLastAttempt(lead.ID)
-        if (lastAttempt?.next_call_at && new Date(lastAttempt.next_call_at) > new Date()) continue
+    for (const entity of entities) {
+      const id = String(entity.ID)
+      const attemptCount = db.getAttemptCount(id)
+      if (attemptCount >= 6) continue
 
-        leads.push({
-          type: 'lead',
-          id: String(lead.ID),
-          priority: calcLeadPriority(lead, attemptCount, lastAttempt),
-          data: lead,
-          attemptCount,
-          lastAttempt,
-          phone: getLeadPhone(lead),
-          name: getLeadName(lead),
-          source: lead.SOURCE_ID || 'unknown',
-          comments: lead.COMMENTS || ''
-        })
+      const lastAttempt = db.getLastAttempt(id)
+      if (lastAttempt?.next_call_at && new Date(lastAttempt.next_call_at) > new Date()) continue
+
+      // Get phone — for deals may need to fetch from contact
+      let phone = getPhone(entity)
+      let name = getName(entity)
+
+      if (crmType === 'deal' && !phone && entity.CONTACT_ID) {
+        try {
+          phone = await bitrix.getDealPhone(entity)
+          name = await bitrix.getDealName(entity)
+        } catch {}
       }
+
+      items.push({
+        type: crmType,
+        id,
+        entityType: crmType,
+        priority: calcPriority(entity, attemptCount, lastAttempt),
+        data: entity,
+        attemptCount,
+        lastAttempt,
+        phone,
+        name,
+        source: entity.SOURCE_ID || 'unknown',
+        comments: entity.COMMENTS || '',
+        stageId: entity.STAGE_ID || entity.STATUS_ID || ''
+      })
     }
   } catch (err) {
-    console.error('[Queue] New leads error:', err.message)
+    console.error(`[Queue] ${crmType} fetch error:`, err.message)
   }
 
-  // Source 2: Tasks with arrived deadline
+  // ── Source 2: Tasks with arrived deadline ─────────────────────
   try {
-    const settings = db.getSettings()
-    const userId = settings.BITRIX_USER_ID
     if (userId) {
       const result = await bitrix.getOverdueTasks(userId)
       const tasks = result?.tasks || result || []
       if (Array.isArray(tasks)) {
         for (const task of tasks) {
           const crmRefs = task.UF_CRM_TASK || []
-          const leadRef = crmRefs.find(r => r?.startsWith?.('L_'))
-          if (!leadRef) continue
-          const leadId = leadRef.replace('L_', '')
-          if (leads.find(l => l.id === leadId)) continue
+          // Support both deal (D_) and lead (L_) references
+          const ref = crmRefs.find(r => r?.startsWith?.('D_') || r?.startsWith?.('L_'))
+          if (!ref) continue
+          const entityId = ref.replace(/^[DL]_/, '')
+          if (items.find(i => i.id === entityId)) continue
 
-          leads.push({
+          items.push({
             type: 'task',
-            id: leadId,
+            id: entityId,
+            entityType: ref.startsWith('D_') ? 'deal' : 'lead',
             taskId: task.ID,
             priority: calcTaskPriority(task),
-            data: { ID: leadId, TITLE: task.TITLE, DATE_CREATE: task.CREATED_DATE },
-            attemptCount: db.getAttemptCount(leadId),
+            data: { ID: entityId, TITLE: task.TITLE, DATE_CREATE: task.CREATED_DATE },
+            attemptCount: db.getAttemptCount(entityId),
             phone: null,
             name: task.TITLE,
             source: 'task',
@@ -117,24 +144,20 @@ async function buildQueue() {
     console.error('[Queue] Tasks error:', err.message)
   }
 
-  // Source 3: Missed calls from SQLite needing retry
+  // ── Source 3: Pending retries from SQLite ─────────────────────
   try {
     const retries = db.getPendingRetries()
     for (const retry of retries) {
-      if (leads.find(l => l.id === retry.lead_id)) continue
-
-      leads.push({
+      if (items.find(i => i.id === retry.lead_id)) continue
+      items.push({
         type: 'retry',
         id: retry.lead_id,
+        entityType: crmType,
         priority: 50,
-        data: {
-          ID: retry.lead_id,
-          TITLE: retry.lead_name || `Лид #${retry.lead_id}`,
-          PHONE: retry.lead_phone
-        },
+        data: { ID: retry.lead_id, TITLE: retry.lead_name || `#${retry.lead_id}` },
         attemptCount: retry.attempt_num,
         phone: retry.lead_phone,
-        name: retry.lead_name || `Лид #${retry.lead_id}`,
+        name: retry.lead_name || `#${retry.lead_id}`,
         source: 'retry',
         comments: ''
       })
@@ -143,10 +166,11 @@ async function buildQueue() {
     console.error('[Queue] Retries error:', err.message)
   }
 
-  leads.sort((a, b) => b.priority - a.priority)
-  queueCache = leads
+  items.sort((a, b) => b.priority - a.priority)
+  queueCache = items
   lastRefresh = Date.now()
-  return leads
+  console.log(`[Queue] Built: ${items.length} items (${crmType} mode)`)
+  return items
 }
 
 async function getQueueStats() {
@@ -173,10 +197,17 @@ async function getNextLead() {
   return queue.length > 0 ? queue[0] : null
 }
 
-function removeFromQueue(leadId) {
-  queueCache = queueCache.filter(l => l.id !== String(leadId))
+// Get next N leads for predictive mode
+async function getNextBatch(count = 5) {
+  const queue = await getQueue(true)
+  return queue.slice(0, count)
+}
+
+function removeFromQueue(entityId) {
+  queueCache = queueCache.filter(l => l.id !== String(entityId))
 }
 
 module.exports = {
-  configure, buildQueue, getQueue, getNextLead, removeFromQueue, getQueueStats
+  configure, buildQueue, getQueue, getNextLead, getNextBatch,
+  removeFromQueue, getQueueStats, getCrmType
 }

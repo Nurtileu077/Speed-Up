@@ -285,6 +285,21 @@ ipcMain.handle('queue:refresh', async () => {
   }
 })
 
+ipcMain.handle('queue:getBatch', async (event, count) => {
+  try {
+    const settings = require('../src/services/db-main').getSettings()
+    const bitrix = require('../src/services/bitrix-main')
+    const db = require('../src/services/db-main')
+    bitrix.configure(settings)
+    const queue = require('../src/services/queue-main')
+    queue.configure(bitrix, db)
+    return await queue.getNextBatch(count || 5)
+  } catch (err) {
+    console.error('queue:getBatch error', err)
+    return []
+  }
+})
+
 ipcMain.handle('queue:getStats', async () => {
   try {
     const settings = require('../src/services/db-main').getSettings()
