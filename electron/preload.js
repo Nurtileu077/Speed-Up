@@ -10,7 +10,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     createTask: (data) => ipcRenderer.invoke('bitrix:createTask', data),
     addComment: (leadId, text) => ipcRenderer.invoke('bitrix:addComment', leadId, text),
     updateLead: (leadId, data) => ipcRenderer.invoke('bitrix:updateLead', leadId, data),
-    testConnection: () => ipcRenderer.invoke('bitrix:testConnection')
+    testConnection: () => ipcRenderer.invoke('bitrix:testConnection'),
+    getPortalUrl: () => ipcRenderer.invoke('bitrix:getPortalUrl')
   },
 
   // Database operations
@@ -32,6 +33,27 @@ contextBridge.exposeInMainWorld('electronAPI', {
 
   // Wazzup/WhatsApp
   wazzup: {
-    sendMessage: (phone, text) => ipcRenderer.invoke('wazzup:sendMessage', phone, text)
-  }
+    sendMessage: (phone, text) => ipcRenderer.invoke('wazzup:sendMessage', phone, text),
+    sendFile: (phone, text, fileUrl) => ipcRenderer.invoke('wazzup:sendFile', phone, text, fileUrl)
+  },
+
+  // AI Analysis
+  ai: {
+    runAnalysis: (data) => ipcRenderer.invoke('ai:runAnalysis', data),
+    getAnalyses: (leadId) => ipcRenderer.invoke('ai:getAnalyses', leadId)
+  },
+
+  // Scheduler
+  scheduler: {
+    calcNextAttempt: (attemptNum) => ipcRenderer.invoke('scheduler:calcNextAttempt', attemptNum),
+    isWorkingHours: () => ipcRenderer.invoke('scheduler:isWorkingHours')
+  },
+
+  // Scheduled WhatsApp
+  wa: {
+    schedule: (data) => ipcRenderer.invoke('wa:schedule', data)
+  },
+
+  // Navigation from tray
+  onNavigate: (callback) => ipcRenderer.on('navigate', (_, route) => callback(route))
 })

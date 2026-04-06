@@ -1,0 +1,264 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Nobilis Dialer Widget</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #0f172a;
+      color: #e2e8f0;
+      font-size: 13px;
+      line-height: 1.5;
+      padding: 16px;
+    }
+    .header {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 16px;
+      padding-bottom: 12px;
+      border-bottom: 1px solid #334155;
+    }
+    .header .icon {
+      width: 28px;
+      height: 28px;
+      background: rgba(59,130,246,0.2);
+      border: 1px solid rgba(59,130,246,0.3);
+      border-radius: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 14px;
+    }
+    .header h1 {
+      font-size: 14px;
+      font-weight: 700;
+      color: #f1f5f9;
+    }
+    .section {
+      margin-bottom: 16px;
+    }
+    .section-title {
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: #64748b;
+      margin-bottom: 8px;
+    }
+    .timeline {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .timeline-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 6px 8px;
+      border-radius: 8px;
+      background: #1e293b;
+      border: 1px solid #334155;
+      font-size: 12px;
+    }
+    .timeline-item .emoji { flex-shrink: 0; }
+    .timeline-item .date { color: #64748b; white-space: nowrap; }
+    .timeline-item .result { font-weight: 500; }
+    .timeline-item .result.success { color: #34d399; }
+    .timeline-item .result.fail { color: #f87171; }
+    .timeline-item .duration { color: #64748b; margin-left: auto; }
+
+    .stats {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+    .stat-card {
+      background: #1e293b;
+      border: 1px solid #334155;
+      border-radius: 8px;
+      padding: 10px;
+    }
+    .stat-card .label { font-size: 11px; color: #64748b; }
+    .stat-card .value { font-size: 18px; font-weight: 700; color: #f1f5f9; }
+    .stat-card .value.blue { color: #60a5fa; }
+    .stat-card .value.green { color: #34d399; }
+
+    .next-call {
+      background: rgba(59,130,246,0.1);
+      border: 1px solid rgba(59,130,246,0.2);
+      border-radius: 10px;
+      padding: 12px;
+      text-align: center;
+      margin-bottom: 12px;
+    }
+    .next-call .label { font-size: 11px; color: #94a3b8; }
+    .next-call .time { font-size: 16px; font-weight: 700; color: #60a5fa; margin-top: 2px; }
+
+    .btn-call {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      width: 100%;
+      padding: 12px;
+      background: #2563eb;
+      color: white;
+      border: none;
+      border-radius: 10px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.15s;
+    }
+    .btn-call:hover { background: #3b82f6; }
+    .btn-call:active { transform: scale(0.98); }
+
+    .loading { color: #64748b; text-align: center; padding: 20px; }
+    .error { color: #f87171; text-align: center; padding: 12px; background: rgba(248,113,113,0.1); border-radius: 8px; }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <div class="icon">📞</div>
+    <h1>NOBILIS DIALER</h1>
+  </div>
+
+  <div id="content">
+    <div class="loading">Загрузка...</div>
+  </div>
+
+  <script>
+    // Bitrix24 JS SDK
+    (function() {
+      const leadId = getLeadIdFromUrl()
+
+      // Simulated data for standalone mode
+      // In production, this fetches from the Express server running on localhost:3001
+      const API_BASE = 'http://localhost:3001'
+
+      async function loadData() {
+        const content = document.getElementById('content')
+
+        try {
+          const response = await fetch(`${API_BASE}/api/lead-widget/${leadId}`)
+          if (!response.ok) throw new Error('Server unavailable')
+          const data = await response.json()
+          renderWidget(data)
+        } catch (err) {
+          // Fallback: show empty state
+          content.innerHTML = `
+            <div class="next-call">
+              <div class="label">Лид #${leadId || '—'}</div>
+              <div class="time">Нет данных</div>
+            </div>
+            <p style="color: #64748b; text-align: center; font-size: 12px; margin-bottom: 12px;">
+              Убедитесь, что Nobilis Dialer запущен
+            </p>
+            <button class="btn-call" onclick="callNow()">📞 Позвонить сейчас</button>
+          `
+        }
+      }
+
+      function renderWidget(data) {
+        const content = document.getElementById('content')
+        const attempts = data.attempts || []
+        const nextCall = data.nextCall
+        const stats = data.stats || {}
+
+        let html = ''
+
+        // Next call
+        if (nextCall) {
+          const date = new Date(nextCall)
+          html += `
+            <div class="next-call">
+              <div class="label">Следующий звонок</div>
+              <div class="time">${date.toLocaleDateString('ru')} ${date.toLocaleTimeString('ru', { hour: '2-digit', minute: '2-digit' })}</div>
+            </div>
+          `
+        }
+
+        // Timeline
+        if (attempts.length > 0) {
+          html += '<div class="section"><div class="section-title">История автодозвона</div><div class="timeline">'
+          for (const a of attempts.slice(0, 8)) {
+            const isSuccess = a.result === 'connected' || a.result === 'meeting' || a.result === 'thinking'
+            const emoji = isSuccess ? '✅' : '❌'
+            const resultClass = isSuccess ? 'success' : 'fail'
+            const labels = {
+              connected: 'Дозвон', meeting: 'Встреча', thinking: 'Думает',
+              no_answer: 'Не берёт трубку', busy: 'Занято',
+              unavailable: 'Недоступен', rejected_call: 'Сбросил'
+            }
+            const date = new Date(a.called_at)
+            const dateStr = date.toLocaleDateString('ru', { day: '2-digit', month: '2-digit' })
+            const timeStr = date.toLocaleTimeString('ru', { hour: '2-digit', minute: '2-digit' })
+            const dur = a.duration_sec > 0 ? `${Math.floor(a.duration_sec / 60)}:${String(a.duration_sec % 60).padStart(2, '0')}` : ''
+
+            html += `
+              <div class="timeline-item">
+                <span class="emoji">${emoji}</span>
+                <span class="date">${dateStr} ${timeStr}</span>
+                <span class="result ${resultClass}">${labels[a.result] || a.result}</span>
+                ${dur ? `<span class="duration">${dur}</span>` : ''}
+              </div>
+            `
+          }
+          html += '</div></div>'
+        }
+
+        // Stats
+        html += `
+          <div class="section">
+            <div class="stats">
+              <div class="stat-card">
+                <div class="label">WA сообщений</div>
+                <div class="value blue">${stats.waSent || 0}</div>
+              </div>
+              <div class="stat-card">
+                <div class="label">Попыток</div>
+                <div class="value">${stats.totalAttempts || 0} <span style="font-size:12px;color:#64748b">из 6</span></div>
+              </div>
+              ${stats.aiScore ? `
+              <div class="stat-card">
+                <div class="label">AI оценка</div>
+                <div class="value green">${stats.aiScore}/10</div>
+              </div>` : ''}
+            </div>
+          </div>
+        `
+
+        // Call button
+        html += '<button class="btn-call" onclick="callNow()">📞 Позвонить сейчас</button>'
+
+        content.innerHTML = html
+      }
+
+      function getLeadIdFromUrl() {
+        const params = new URLSearchParams(window.location.search)
+        return params.get('lead_id') || params.get('ENTITY_ID') || ''
+      }
+
+      window.callNow = function() {
+        // In Bitrix24 context, this triggers a call via REST API
+        if (window.BX24) {
+          BX24.callMethod('telephony.externalcall.register', {
+            PHONE_NUMBER: '', // will be filled by Bitrix
+            CRM_ENTITY_TYPE: 'LEAD',
+            CRM_ENTITY_ID: leadId
+          })
+        } else {
+          // Standalone: open in Nobilis app
+          window.open(`nobilis-dialer://call/${leadId}`, '_blank')
+        }
+      }
+
+      loadData()
+    })()
+  </script>
+</body>
+</html>

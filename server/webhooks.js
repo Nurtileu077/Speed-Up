@@ -1,33 +1,34 @@
 const express = require('express')
 const router = express.Router()
 
-// These require() calls are safe — db and bitrix run in the server context
-let db, bitrix, whisper, aiAnalysis, wazzup
+let db, bitrix
 
-try {
-  db = require('../src/services/db')
-  bitrix = require('../src/services/bitrix')
-  whisper = require('../src/services/whisper')
-  aiAnalysis = require('../src/services/aiAnalysis')
-  wazzup = require('../src/services/wazzup')
-} catch (err) {
-  console.warn('[Webhooks] Service import warning:', err.message)
+function loadServices() {
+  try {
+    if (!db) db = require('../src/services/db-main')
+    if (!bitrix) bitrix = require('../src/services/bitrix-main')
+  } catch (err) {
+    console.warn('[Webhooks] Service load warning:', err.message)
+  }
 }
 
-// Bitrix24 sends event data as POST with body
+// ─── Bitrix24 Webhook ─────────────────────────────────────────
+
 router.post('/webhook/bitrix', async (req, res) => {
+  loadServices()
+
   try {
     const body = req.body
-    console.log('[Webhook] Received Bitrix24 event:', JSON.stringify(body).slice(0, 200))
+    console.log('[Webhook] Bitrix24 event:', JSON.stringify(body).slice(0, 300))
 
     // Call completion event
-    if (body.event === 'ONCALLFINISH' || body.data?.CALL_ID) {
-      await handleCallFinish(body.data || body)
+    if (body.event === 'ONCALLFINISH' || body.event === 'ONVOXIMPLANTCALLEND') {
+      handleCallFinish(body.data || body)
     }
 
-    // Lead created event
-    if (body.event === 'ONCRMLEIDADD' || body.event === 'ONCRMLEADADD') {
-      console.log('[Webhook] New lead created:', body.data?.FIELDS?.ID)
+    // New lead event
+    if (body.event === 'ONCRMLEADADD') {
+      console.log('[Webhook] New lead:', body.data?.FIELDS?.ID)
     }
 
     res.json({ ok: true })
@@ -40,59 +41,85 @@ router.post('/webhook/bitrix', async (req, res) => {
 async function handleCallFinish(data) {
   const callId = data.CALL_ID
   const duration = parseInt(data.CALL_DURATION) || 0
-  const recordUrl = data.RECORD_URL
+  const leadId = data.CRM_ENTITY_ID || data.ENTITY_ID
 
-  console.log(`[Webhook] Call finished: ${callId}, duration: ${duration}s, recording: ${!!recordUrl}`)
-
-  if (!recordUrl || duration < 30) {
-    console.log('[Webhook] No recording or too short — skipping AI analysis')
+  if (!callId || !leadId) return
+  if (duration < 30) {
+    console.log('[Webhook] Call too short for AI analysis')
     return
   }
 
-  // Run AI analysis in background
+  // Run AI pipeline in background
   setImmediate(async () => {
     try {
-      console.log('[AI] Starting analysis for call:', callId)
-
-      // Step 1: Transcribe
-      const transcript = await whisper.transcribeAudio(recordUrl)
-      console.log('[AI] Transcription complete, length:', transcript.length)
-
-      // Step 2: Find which lead this call belongs to
-      const leadId = data.ENTITY_ID || data.CRM_ENTITY_ID
-
-      // Step 3: Analyze with Claude
-      const analysis = await aiAnalysis.analyzeCall(transcript, { leadId })
-      console.log('[AI] Analysis complete, score:', analysis.score)
-
-      // Step 4: Save to SQLite
-      if (db && leadId) {
-        const attempts = db.getCallAttempts(leadId)
-        if (attempts.length > 0) {
-          db.updateAiScore(attempts[0].id, analysis.score, analysis.summary)
-        }
-      }
-
-      // Step 5: Post comment to Bitrix24 timeline
-      if (bitrix && leadId) {
-        const comment = aiAnalysis.formatBitrixComment(analysis, duration)
-        await bitrix.addTimelineComment(leadId, comment)
-
-        // Step 6: Update custom lead fields
-        await bitrix.updateLead(leadId, {
-          UF_CRM_CLIENT_GOAL: analysis.client_goal,
-          UF_CRM_OBJECTION: analysis.objection,
-          UF_CRM_AGREEMENT: analysis.agreement,
-          UF_CRM_CLIENT_MOOD: analysis.client_mood,
-          UF_CRM_AI_SCORE: String(analysis.score)
-        })
-      }
-
-      console.log('[AI] Analysis pipeline complete for lead:', leadId)
+      loadServices()
+      const settings = db.getSettings()
+      bitrix.configure(settings)
+      const pipeline = require('../src/services/ai-pipeline')
+      await pipeline.runPipeline({ callId, leadId, durationSec: duration, db, bitrix })
     } catch (err) {
-      console.error('[AI] Analysis pipeline failed:', err.message)
+      console.error('[Webhook] AI pipeline error:', err.message)
     }
   })
 }
+
+// ─── Widget API (for Bitrix24 sidebar) ────────────────────────
+
+router.get('/api/lead-widget/:leadId', async (req, res) => {
+  loadServices()
+
+  try {
+    const leadId = req.params.leadId
+    const attempts = db ? db.getCallAttempts(leadId) : []
+    const lastAttempt = attempts[0] || null
+
+    const waSent = attempts.filter(a => a.wa_sent).length
+    const aiScores = attempts.filter(a => a.ai_score).map(a => a.ai_score)
+    const avgAi = aiScores.length
+      ? Math.round(aiScores.reduce((a, b) => a + b, 0) / aiScores.length * 10) / 10
+      : null
+
+    res.json({
+      leadId,
+      attempts: attempts.slice(0, 10),
+      nextCall: lastAttempt?.next_call_at || null,
+      stats: {
+        totalAttempts: attempts.length,
+        waSent,
+        aiScore: avgAi
+      }
+    })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// ─── Manager Stats API (for dashboard) ────────────────────────
+
+router.get('/api/stats', async (req, res) => {
+  loadServices()
+
+  try {
+    const { managerId, dateFrom, dateTo } = req.query
+    const attempts = db ? db.getAllCallAttempts({ managerId, dateFrom, dateTo, limit: 5000 }) : []
+
+    const total = attempts.length
+    const connected = attempts.filter(a => ['connected', 'meeting', 'thinking'].includes(a.result)).length
+    const talkSec = attempts.filter(a => a.duration_sec > 0).reduce((s, a) => s + a.duration_sec, 0)
+    const aiScores = attempts.filter(a => a.ai_score).map(a => a.ai_score)
+
+    res.json({
+      total_calls: total,
+      connected,
+      talk_minutes: Math.round(talkSec / 60 * 10) / 10,
+      connect_rate: total ? Math.round(connected / total * 100) : 0,
+      avg_ai_score: aiScores.length
+        ? Math.round(aiScores.reduce((a, b) => a + b, 0) / aiScores.length * 10) / 10
+        : null
+    })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
 
 module.exports = router

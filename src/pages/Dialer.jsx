@@ -144,9 +144,21 @@ export default function Dialer() {
       return
     }
 
-    // Save attempt to DB
+    // Calculate next attempt time for no-answer cases
     const nextAttempt = attemptCount + 1
     const now = new Date().toISOString()
+    let nextCallAt = null
+
+    if (callMode !== 'connected' && nextAttempt < 6) {
+      try {
+        nextCallAt = await window.electronAPI?.scheduler?.calcNextAttempt(nextAttempt)
+      } catch {}
+    }
+
+    // Save attempt to DB
+    const phone = Array.isArray(currentLead?.PHONE)
+      ? currentLead.PHONE[0]?.VALUE
+      : currentLead?.phone || currentLead?.PHONE || ''
 
     if (window.electronAPI?.db) {
       await window.electronAPI.db.saveCallAttempt({
@@ -155,7 +167,11 @@ export default function Dialer() {
         attempt_num: nextAttempt,
         called_at: now,
         duration_sec: timer.seconds,
-        result: callMode === 'connected' ? resultId : resultId
+        result: resultId,
+        next_call_at: nextCallAt,
+        lead_name: leadName,
+        lead_phone: phone,
+        bitrix_call_id: activeCallId
       })
     }
 
@@ -215,6 +231,30 @@ export default function Dialer() {
         }
       }
 
+      // Schedule "thinking" follow-up WA in 2 days
+      if (resultId === 'thinking' && phone && window.electronAPI?.wa) {
+        const followUpDate = new Date()
+        followUpDate.setDate(followUpDate.getDate() + 2)
+        followUpDate.setHours(10, 0, 0, 0)
+        try {
+          await window.electronAPI.wa.schedule({
+            leadId: String(leadId),
+            phone,
+            message: `Здравствуйте, ${leadName}! Как ваше решение по ${leadTopic}?\nГотов ответить на любые вопросы.`,
+            sendAt: followUpDate.toISOString()
+          })
+        } catch {}
+      }
+
+      // Run AI analysis in background for connected calls
+      if (activeCallId && timer.seconds >= 30 && window.electronAPI?.ai) {
+        window.electronAPI.ai.runAnalysis({
+          callId: activeCallId,
+          leadId: String(leadId),
+          durationSec: timer.seconds
+        }).catch(err => console.warn('AI analysis error:', err))
+      }
+
       if (template) {
         setWaTemplate(template)
         setScreen(SCREEN.WHATSAPP)
@@ -223,19 +263,46 @@ export default function Dialer() {
       }
     } else {
       // No answer — add comment and schedule retry
+      const resultLabels = {
+        no_answer: 'Не берёт трубку',
+        busy: 'Занято',
+        unavailable: 'Недоступен / вне зоны',
+        rejected_call: 'Сбросил вызов'
+      }
+
       if (window.electronAPI?.bitrix) {
-        const resultLabels = {
-          no_answer: 'Не берёт трубку',
-          busy: 'Занято',
-          unavailable: 'Недоступен / вне зоны',
-          rejected_call: 'Сбросил вызов'
+        let comment = `📞 Автодозвон #${nextAttempt} — Недозвон\nВремя: ${new Date().toLocaleString('ru')}\nМенеджер: текущий\nРезультат: ${resultLabels[resultId] || resultId}`
+        if (nextCallAt) {
+          const nextDate = new Date(nextCallAt)
+          comment += `\nСледующая попытка: ${nextDate.toLocaleString('ru')}`
         }
-        const comment = `📞 Автодозвон #${nextAttempt} — Недозвон\nВремя: ${new Date().toLocaleString('ru')}\nРезультат: ${resultLabels[resultId] || resultId}`
         try {
           await window.electronAPI.bitrix.addComment(String(leadId), comment)
         } catch (err) {
           console.warn('addComment error:', err.message)
         }
+
+        // Create "Перезвонить" task for next attempt
+        if (nextCallAt) {
+          try {
+            await window.electronAPI.bitrix.createTask({
+              TITLE: `Перезвонить — ${leadName} (попытка #${nextAttempt + 1})`,
+              DEADLINE: nextCallAt,
+              UF_CRM_TASK: [`L_${leadId}`],
+              DESCRIPTION: `Автодозвон: предыдущий результат — ${resultLabels[resultId]}`
+            })
+          } catch {}
+        }
+      }
+
+      // After 6 failed attempts → update lead status
+      if (nextAttempt >= 6 && window.electronAPI?.bitrix) {
+        try {
+          await window.electronAPI.bitrix.updateLead(String(leadId), {
+            STATUS_ID: 'UC_REFUSE',
+            COMMENTS: 'Автодозвон: 6 попыток, не берёт трубку'
+          })
+        } catch {}
       }
 
       // Auto-WhatsApp on attempt 3 or 6

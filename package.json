@@ -9,6 +9,8 @@
   "scripts": {
     "dev": "concurrently \"vite\" \"wait-on http://localhost:5173 && electron .\"",
     "build": "vite build && electron-builder",
+    "build:mac": "vite build && electron-builder --mac",
+    "build:win": "vite build && electron-builder --win",
     "server": "node server/index.js",
     "electron": "electron .",
     "preview": "vite preview"
@@ -22,6 +24,7 @@
     "dotenv": "^16.3.1",
     "electron-is-dev": "^2.0.0",
     "express": "^4.18.2",
+    "form-data": "^4.0.0",
     "lucide-react": "^0.303.0",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
@@ -48,16 +51,29 @@
       "dist/**/*",
       "electron/**/*",
       "server/**/*",
+      "src/services/**/*",
+      "widget/**/*",
+      "assets/**/*",
       "node_modules/**/*",
       "package.json"
     ],
     "mac": {
-      "target": "dmg",
-      "icon": "assets/icon.icns"
+      "target": ["dmg", "zip"],
+      "icon": "assets/icon.png",
+      "category": "public.app-category.business",
+      "protocols": {
+        "name": "Nobilis Dialer",
+        "schemes": ["nobilis-dialer"]
+      }
     },
     "win": {
       "target": "nsis",
-      "icon": "assets/icon.ico"
+      "icon": "assets/icon.png"
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": true,
+      "allowToChangeInstallationDirectory": true
     },
     "linux": {
       "target": "AppImage"

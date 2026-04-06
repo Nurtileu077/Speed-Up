@@ -1,10 +1,12 @@
-const { app, BrowserWindow, ipcMain, Menu, shell } = require('electron')
+const { app, BrowserWindow, ipcMain, Menu, shell, nativeImage } = require('electron')
 const path = require('path')
 const { spawn } = require('child_process')
 const isDev = require('electron-is-dev')
+const { createTray } = require('./tray')
 
 let mainWindow
 let serverProcess
+let tray = null
 
 function startExpressServer() {
   const serverPath = path.join(__dirname, '../server/index.js')
@@ -322,37 +324,132 @@ ipcMain.handle('wazzup:sendMessage', async (event, phone, text) => {
   }
 })
 
+ipcMain.handle('wazzup:sendFile', async (event, phone, text, fileUrl) => {
+  try {
+    const settings = require('../src/services/db-main').getSettings()
+    const wazzup = require('../src/services/wazzup-main')
+    wazzup.configure(settings)
+    return await wazzup.sendFile(phone, text, fileUrl)
+  } catch (err) {
+    console.error('wazzup:sendFile error', err)
+    return { error: err.message }
+  }
+})
+
+// IPC Handlers - AI Pipeline
+ipcMain.handle('ai:runAnalysis', async (event, { callId, leadId, durationSec }) => {
+  try {
+    const db = require('../src/services/db-main')
+    const settings = db.getSettings()
+    const bitrix = require('../src/services/bitrix-main')
+    bitrix.configure(settings)
+    const pipeline = require('../src/services/ai-pipeline')
+    return await pipeline.runPipeline({ callId, leadId, durationSec, db, bitrix })
+  } catch (err) {
+    console.error('ai:runAnalysis error', err)
+    return { error: err.message }
+  }
+})
+
+ipcMain.handle('ai:getAnalyses', async (event, leadId) => {
+  try {
+    const db = require('../src/services/db-main')
+    return db.getAiAnalyses(leadId)
+  } catch (err) {
+    console.error('ai:getAnalyses error', err)
+    return []
+  }
+})
+
+// IPC Handlers - Scheduler
+ipcMain.handle('scheduler:calcNextAttempt', async (event, attemptNum) => {
+  const scheduler = require('../src/services/scheduler-main')
+  return scheduler.calcNextAttemptTime(attemptNum)
+})
+
+ipcMain.handle('scheduler:isWorkingHours', async () => {
+  const scheduler = require('../src/services/scheduler-main')
+  return scheduler.isWorkingHours()
+})
+
+// IPC Handlers - Scheduled WhatsApp
+ipcMain.handle('wa:schedule', async (event, { leadId, phone, message, sendAt }) => {
+  try {
+    const db = require('../src/services/db-main')
+    db.scheduleWa(leadId, phone, message, sendAt)
+    return { success: true }
+  } catch (err) {
+    return { success: false, error: err.message }
+  }
+})
+
+// IPC Handlers - Portal URL
+ipcMain.handle('bitrix:getPortalUrl', async () => {
+  const settings = require('../src/services/db-main').getSettings()
+  return settings.BITRIX_PORTAL || ''
+})
+
 app.whenReady().then(() => {
   // Initialize DB first
   try {
     const db = require('../src/services/db-main')
     db.initDB()
     console.log('[Main] Database initialized')
+
+    // Initialize and start scheduler (Phase 2 + 5)
+    const settings = db.getSettings()
+    const bitrix = require('../src/services/bitrix-main')
+    const wazzup = require('../src/services/wazzup-main')
+
+    if (settings.BITRIX_WEBHOOK) bitrix.configure(settings)
+    if (settings.WAZZUP_API_KEY) wazzup.configure(settings)
+
+    const scheduler = require('../src/services/scheduler-main')
+    scheduler.configure({ db, bitrix, wazzup })
+    scheduler.start()
   } catch (err) {
-    console.error('[Main] DB init error', err)
+    console.error('[Main] Init error', err)
   }
 
   startExpressServer()
   createWindow()
 
+  // Create tray icon (Phase 6)
+  try {
+    tray = createTray(mainWindow)
+  } catch (err) {
+    console.warn('[Main] Tray creation failed:', err.message)
+  }
+
+  // Auto-start on login (Phase 6 — macOS)
+  if (!isDev && process.platform === 'darwin') {
+    app.setLoginItemSettings({
+      openAtLogin: true,
+      openAsHidden: true
+    })
+  }
+
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
       createWindow()
+    } else if (mainWindow) {
+      mainWindow.show()
     }
   })
 })
 
+// macOS: minimize to tray instead of quitting
 app.on('window-all-closed', () => {
-  if (serverProcess) {
-    serverProcess.kill()
-  }
   if (process.platform !== 'darwin') {
+    if (serverProcess) serverProcess.kill()
     app.quit()
   }
 })
 
 app.on('before-quit', () => {
-  if (serverProcess) {
-    serverProcess.kill()
-  }
+  try {
+    const scheduler = require('../src/services/scheduler-main')
+    scheduler.stop()
+  } catch {}
+  if (serverProcess) serverProcess.kill()
 })

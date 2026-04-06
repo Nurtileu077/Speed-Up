@@ -1,6 +1,7 @@
 require('dotenv').config()
 const express = require('express')
 const cors = require('cors')
+const path = require('path')
 const webhooksRouter = require('./webhooks')
 const scheduler = require('./scheduler')
 
@@ -8,7 +9,7 @@ const app = express()
 const PORT = process.env.SERVER_PORT || 3001
 
 app.use(cors({
-  origin: ['http://localhost:5173', 'http://localhost:3000'],
+  origin: ['http://localhost:5173', 'http://localhost:3000', '*'],
   credentials: true
 }))
 
@@ -25,7 +26,10 @@ app.get('/health', (req, res) => {
   })
 })
 
-// Webhooks routes
+// Bitrix24 widget static files
+app.use('/widget', express.static(path.join(__dirname, '../widget')))
+
+// Webhooks and API routes
 app.use('/', webhooksRouter)
 
 // Global error handler
@@ -35,7 +39,8 @@ app.use((err, req, res, next) => {
 })
 
 app.listen(PORT, () => {
-  console.log(`[Server] Nobilis Dialer server running on port ${PORT}`)
+  console.log(`[Server] Nobilis Dialer running on port ${PORT}`)
+  console.log(`[Server] Widget: http://localhost:${PORT}/widget/`)
   scheduler.start()
 })
 
