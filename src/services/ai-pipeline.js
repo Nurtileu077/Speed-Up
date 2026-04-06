@@ -138,7 +138,7 @@ function formatBitrixComment(analysis, durationSec) {
  * Run full pipeline:
  *  recording URL → Whisper → Claude → SQLite + Bitrix24
  */
-async function runPipeline({ callId, leadId, durationSec, db, bitrix }) {
+async function runPipeline({ callId, leadId, durationSec, recordUrl: providedRecordUrl, db, bitrix }) {
   const settings = db.getSettings()
   const openaiKey = settings.OPENAI_API_KEY
   const anthropicKey = settings.ANTHROPIC_API_KEY
@@ -151,16 +151,20 @@ async function runPipeline({ callId, leadId, durationSec, db, bitrix }) {
   console.log(`[AI] Starting pipeline for call ${callId}, lead ${leadId}`)
 
   // Step 1: Get recording URL
-  let recordUrl
-  try {
-    recordUrl = await bitrix.getCallRecording(callId)
-  } catch (err) {
-    console.error('[AI] Failed to get recording:', err.message)
-    return null
+  // For SIP/Beeline: URL comes directly in webhook body (providedRecordUrl)
+  // Fallback: search via crm.activity.list
+  let recordUrl = providedRecordUrl || null
+
+  if (!recordUrl) {
+    try {
+      recordUrl = await bitrix.getCallRecording(callId)
+    } catch (err) {
+      console.warn('[AI] Could not fetch recording via activity:', err.message)
+    }
   }
 
   if (!recordUrl) {
-    console.log('[AI] No recording available')
+    console.log('[AI] No recording URL available — skipping analysis')
     return null
   }
 

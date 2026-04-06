@@ -128,16 +128,33 @@ async function finishCall(callId, status, duration) {
   })
 }
 
+/**
+ * Get call recording URL.
+ * For SIP/Beeline connector — the recording URL comes directly in the webhook body (RECORD_URL).
+ * Fallback: search crm.activity.list for a call activity with the matching call ID.
+ */
 async function getCallRecording(callId) {
-  const stats = await call('voximplant.statistic.get', {
-    filter: { CALL_ID: callId },
-    SORT: 'CALL_START_DATE',
-    ORDER: 'DESC'
-  })
-  if (Array.isArray(stats) && stats.length > 0) {
-    return stats[0].RECORD_URL || null
+  // Try to find the recording via CRM activity
+  // The call activity has RECORD_URL field when recording is available
+  try {
+    const activities = await call('crm.activity.list', {
+      filter: {
+        TYPE_ID: 2,          // 2 = Phone call
+        SETTINGS: { CALL_ID: callId }
+      },
+      select: ['ID', 'SETTINGS', 'SUBJECT']
+    })
+
+    if (Array.isArray(activities) && activities.length > 0) {
+      const settings = activities[0].SETTINGS
+      if (settings?.RECORD_URL) return settings.RECORD_URL
+      if (settings?.record_url) return settings.record_url
+    }
+  } catch (err) {
+    console.warn('[Bitrix] getCallRecording via activity failed:', err.message)
   }
-  return null
+
+  return null // Recording URL comes from webhook body (RECORD_URL field)
 }
 
 // ─── Timeline ─────────────────────────────────────────────────

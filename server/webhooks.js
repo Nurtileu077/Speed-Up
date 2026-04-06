@@ -21,8 +21,9 @@ router.post('/webhook/bitrix', async (req, res) => {
     const body = req.body
     console.log('[Webhook] Bitrix24 event:', JSON.stringify(body).slice(0, 300))
 
-    // Call completion event
-    if (body.event === 'ONCALLFINISH' || body.event === 'ONVOXIMPLANTCALLEND') {
+    // Call completion events (various Bitrix24 telephony formats)
+    const callEvents = ['ONCALLFINISH', 'ONEXTERNALCALLFINISH', 'ONEXTERNALCALLBACKSTART']
+    if (callEvents.includes(body.event) || body.data?.CALL_ID) {
       handleCallFinish(body.data || body)
     }
 
@@ -40,12 +41,20 @@ router.post('/webhook/bitrix', async (req, res) => {
 
 async function handleCallFinish(data) {
   const callId = data.CALL_ID
-  const duration = parseInt(data.CALL_DURATION) || 0
-  const leadId = data.CRM_ENTITY_ID || data.ENTITY_ID
+  const duration = parseInt(data.CALL_DURATION) || parseInt(data.DURATION) || 0
+  const leadId = data.CRM_ENTITY_ID || data.ENTITY_ID || data.CRM_ENTITY
 
-  if (!callId || !leadId) return
+  // Recording URL comes directly in webhook body for SIP/Beeline connector
+  const recordUrl = data.RECORD_URL || data.record_url || null
+
+  console.log(`[Webhook] Call finished: id=${callId} lead=${leadId} duration=${duration}s recording=${!!recordUrl}`)
+
+  if (!callId || !leadId) {
+    console.log('[Webhook] Missing callId or leadId — skipping')
+    return
+  }
   if (duration < 30) {
-    console.log('[Webhook] Call too short for AI analysis')
+    console.log('[Webhook] Call too short — skipping AI analysis')
     return
   }
 
@@ -56,7 +65,8 @@ async function handleCallFinish(data) {
       const settings = db.getSettings()
       bitrix.configure(settings)
       const pipeline = require('../src/services/ai-pipeline')
-      await pipeline.runPipeline({ callId, leadId, durationSec: duration, db, bitrix })
+      // Pass recordUrl directly so pipeline doesn't need to fetch it separately
+      await pipeline.runPipeline({ callId, leadId, durationSec: duration, recordUrl, db, bitrix })
     } catch (err) {
       console.error('[Webhook] AI pipeline error:', err.message)
     }

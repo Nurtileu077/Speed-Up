@@ -102,10 +102,19 @@ async function finishCall(callId, status, duration) {
   })
 }
 
+// Recording URL comes in webhook body (RECORD_URL) for SIP/Beeline connector.
+// Fallback: search via crm.activity.list
 async function getCallRecording(callId) {
-  return call('voximplant.statistic.get', {
-    filter: { CALL_ID: callId }
-  })
+  try {
+    const activities = await call('crm.activity.list', {
+      filter: { TYPE_ID: 2, SETTINGS: { CALL_ID: callId } },
+      select: ['ID', 'SETTINGS']
+    })
+    if (Array.isArray(activities) && activities.length > 0) {
+      return activities[0].SETTINGS?.RECORD_URL || null
+    }
+  } catch {}
+  return null
 }
 
 // ---- Timeline ----
