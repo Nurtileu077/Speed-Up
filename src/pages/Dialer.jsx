@@ -9,6 +9,7 @@ import WaMessage from '../components/WaMessage'
 const SCREEN = {
   WAITING: 'waiting',
   LOADING: 'loading',
+  DIALING: 'dialing',   // NEW: show number, manager dials manually
   ACTIVE: 'active',
   RESULT: 'result',
   WHATSAPP: 'whatsapp'
@@ -94,27 +95,30 @@ export default function Dialer() {
       setAttemptCount(attempts?.length || 0)
       setCurrentLead(lead.data || lead)
 
-      // Initiate call via Bitrix24
-      const phone = lead.phone || (Array.isArray(lead.data?.PHONE) ? lead.data.PHONE[0]?.VALUE : lead.data?.PHONE)
-
-      if (phone && window.electronAPI?.bitrix) {
-        try {
-          const callResult = await window.electronAPI.bitrix.initiateCall(
-            lead.id,
-            phone
-          )
-          setActiveCallId(callResult?.CALL_ID || null)
-        } catch (callErr) {
-          console.warn('Call initiation failed:', callErr.message)
-          // Continue without call ID — manual calling mode
-        }
-      }
-
-      setScreen(SCREEN.ACTIVE)
+      // Show DIALING screen first — manager dials manually from SIP phone
+      setScreen(SCREEN.DIALING)
     } catch (err) {
       setError(err.message || 'Ошибка загрузки лида')
       setScreen(SCREEN.WAITING)
     }
+  }
+
+  // Manager confirmed they started dialing — register in Bitrix24, start timer
+  async function handleStartCall() {
+    const leadId = currentLead?.ID || currentLead?.id
+    const phone = Array.isArray(currentLead?.PHONE)
+      ? currentLead.PHONE[0]?.VALUE
+      : currentLead?.phone || currentLead?.PHONE || ''
+
+    if (phone && window.electronAPI?.bitrix) {
+      try {
+        const result = await window.electronAPI.bitrix.initiateCall(leadId, phone)
+        setActiveCallId(result?.CALL_ID || null)
+      } catch (err) {
+        console.warn('Bitrix call register failed:', err.message)
+      }
+    }
+    setScreen(SCREEN.ACTIVE)
   }
 
   async function handleCallEnd(mode) {
@@ -352,11 +356,25 @@ export default function Dialer() {
     }
   }
 
-  function openInBitrix() {
-    const leadId = currentLead?.ID || currentLead?.id
-    if (!leadId) return
-    const portal = localStorage.getItem('BITRIX_PORTAL') || 'https://nobilis.bitrix24.kz'
-    window.open?.(`${portal}/crm/lead/details/${leadId}/`, '_blank')
+  async function openInBitrix() {
+    const entityId = currentLead?.ID || currentLead?.id
+    if (!entityId) return
+    try {
+      const portal = await window.electronAPI?.bitrix?.getPortalUrl() || ''
+      const settings = await window.electronAPI?.db?.getSettings() || {}
+      const crmType = settings.CRM_TYPE || 'deal'
+      const path = crmType === 'deal'
+        ? `/crm/deal/details/${entityId}/`
+        : `/crm/lead/details/${entityId}/`
+      window.open?.(`${portal}${path}`, '_blank')
+    } catch {}
+  }
+
+  function copyPhone() {
+    const phone = Array.isArray(currentLead?.PHONE)
+      ? currentLead.PHONE[0]?.VALUE
+      : currentLead?.phone || currentLead?.PHONE || ''
+    if (phone) navigator.clipboard?.writeText(phone)
   }
 
   // ─── SCREEN: WAITING ───────────────────────────────────────────
@@ -421,6 +439,78 @@ export default function Dialer() {
             <RefreshCw size={14} className={refreshing ? 'animate-spin' : ''} />
             Обновить очередь
           </button>
+        </div>
+      </div>
+    )
+  }
+
+  // ─── SCREEN: DIALING ────────────────────────────────────────────
+  if (screen === SCREEN.DIALING) {
+    const phone = Array.isArray(currentLead?.PHONE)
+      ? currentLead.PHONE[0]?.VALUE
+      : currentLead?.phone || currentLead?.PHONE || ''
+    const name = currentLead?.name || currentLead?.NAME || currentLead?.TITLE || ''
+    const attempt = attemptCount + 1
+
+    return (
+      <div className="h-full flex flex-col items-center justify-center gap-6 p-6">
+        {/* Attempt badge */}
+        <div className="text-xs font-semibold text-slate-500 uppercase tracking-wide">
+          Звонок #{attempt} из 6
+        </div>
+
+        {/* Name */}
+        <div className="text-center">
+          <p className="text-2xl font-bold text-slate-100">{name}</p>
+          <p className="text-sm text-slate-500 mt-1">
+            {currentLead?.SOURCE_ID || currentLead?.STAGE_ID || ''}
+          </p>
+        </div>
+
+        {/* Big phone number */}
+        <div
+          onClick={copyPhone}
+          className="bg-slate-800 border-2 border-blue-500/40 rounded-2xl px-8 py-5 cursor-pointer hover:border-blue-500/70 transition-colors text-center group"
+          title="Нажми чтобы скопировать"
+        >
+          <p className="text-3xl font-mono font-bold text-blue-300 tracking-wider">
+            {formatPhone(phone)}
+          </p>
+          <p className="text-xs text-slate-600 mt-2 group-hover:text-slate-400 transition-colors">
+            нажми чтобы скопировать
+          </p>
+        </div>
+
+        {/* Instructions */}
+        <div className="bg-slate-800/50 border border-slate-700 rounded-xl px-5 py-3 text-sm text-slate-400 text-center max-w-xs">
+          Наберите номер на SIP телефоне, затем нажмите <strong className="text-slate-200">«Начать звонок»</strong>
+        </div>
+
+        {/* Actions */}
+        <div className="flex flex-col gap-3 w-full max-w-xs">
+          <button
+            onClick={handleStartCall}
+            className="btn-success w-full text-lg py-4 flex items-center justify-center gap-2"
+          >
+            <Phone size={20} />
+            Начать звонок
+          </button>
+
+          <div className="flex gap-2">
+            <button
+              onClick={openInBitrix}
+              className="btn-ghost flex-1 text-sm flex items-center justify-center gap-1.5"
+            >
+              <ExternalLink size={14} />
+              Открыть в Bitrix24
+            </button>
+            <button
+              onClick={() => { setCurrentLead(null); setScreen(SCREEN.WAITING) }}
+              className="btn-ghost flex-1 text-sm text-slate-500"
+            >
+              Пропустить
+            </button>
+          </div>
         </div>
       </div>
     )
