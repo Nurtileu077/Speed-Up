@@ -1,24 +1,35 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react'
-import { Phone, PhoneOff, PhoneCall, RefreshCw, ExternalLink, AlertTriangle, Users } from 'lucide-react'
-import LeadCard from '../components/LeadCard'
-import CallResult from '../components/CallResult'
+import {
+  Phone, PhoneOff, PhoneCall, RefreshCw, ExternalLink,
+  AlertTriangle, MessageCircle, CheckCircle, Clock, ChevronRight, Copy
+} from 'lucide-react'
 import ScriptPanel from '../components/ScriptPanel'
-import WaMessage from '../components/WaMessage'
 
-// Dialer screens
 const SCREEN = {
   WAITING: 'waiting',
   LOADING: 'loading',
-  DIALING: 'dialing',   // NEW: show number, manager dials manually
+  DIALING: 'dialing',
   ACTIVE: 'active',
-  RESULT: 'result',
-  WHATSAPP: 'whatsapp'
+  NO_ANSWER: 'no_answer',
+  CONNECTED: 'connected'
 }
+
+const NO_ANSWER_REASONS = [
+  { id: 'no_answer', label: 'Не берёт трубку' },
+  { id: 'busy', label: 'Занято' },
+  { id: 'unavailable', label: 'Недоступен' },
+  { id: 'rejected_call', label: 'Сбросил вызов' }
+]
+
+const CONNECTED_RESULTS = [
+  { id: 'meeting', label: '🤝 Встреча назначена', color: 'emerald' },
+  { id: 'thinking', label: '💭 Думает, перезвонит', color: 'blue' },
+  { id: 'rejected', label: '❌ Отказал', color: 'red' }
+]
 
 function useTimer(running) {
   const [seconds, setSeconds] = useState(0)
   const ref = useRef(null)
-
   useEffect(() => {
     if (running) {
       setSeconds(0)
@@ -28,331 +39,328 @@ function useTimer(running) {
     }
     return () => clearInterval(ref.current)
   }, [running])
-
   const mm = String(Math.floor(seconds / 60)).padStart(2, '0')
   const ss = String(seconds % 60).padStart(2, '0')
   return { seconds, display: `${mm}:${ss}` }
 }
 
+function getPhone(lead) {
+  if (!lead) return ''
+  const p = lead.phone || lead.PHONE
+  if (!p) return ''
+  if (Array.isArray(p)) return p[0]?.VALUE || ''
+  return p
+}
+
+function getName(lead) {
+  if (!lead) return ''
+  const parts = [lead.NAME, lead.LAST_NAME].filter(Boolean)
+  if (parts.length) return parts.join(' ')
+  return lead.name || lead.TITLE || `#${lead.ID || lead.id || ''}`
+}
+
 function formatPhone(phone) {
   if (!phone) return 'Нет номера'
-  const clean = phone.replace(/\D/g, '')
-  if (clean.length === 11) {
-    return `+${clean[0]} ${clean.slice(1,4)} ${clean.slice(4,7)} ${clean.slice(7,9)} ${clean.slice(9)}`
-  }
+  const c = String(phone).replace(/\D/g, '')
+  if (c.length === 11) return `+${c[0]} ${c.slice(1,4)} ${c.slice(4,7)} ${c.slice(7,9)} ${c.slice(9)}`
+  if (c.length === 10) return `+7 ${c.slice(0,3)} ${c.slice(3,6)} ${c.slice(6,8)} ${c.slice(8)}`
   return phone
+}
+
+function formatDuration(sec) {
+  const m = Math.floor(sec / 60)
+  const s = sec % 60
+  return m > 0 ? `${m} мин ${s} сек` : `${s} сек`
+}
+
+function formatNoAnswerComment(reason, attemptNum, nextCallAt, managerName) {
+  const labels = { no_answer: 'Не берёт трубку', busy: 'Занято', unavailable: 'Недоступен', rejected_call: 'Сбросил вызов' }
+  let text = `📞 Автодозвон #${attemptNum} — Недозвон\nВремя: ${new Date().toLocaleString('ru')}\nРезультат: ${labels[reason] || reason}`
+  if (nextCallAt) text += `\nСледующая попытка: ${new Date(nextCallAt).toLocaleString('ru')}`
+  return text
+}
+
+function formatConnectedComment(result, durationSec) {
+  const labels = { meeting: 'Встреча назначена', thinking: 'Думает, перезвонит', rejected: 'Отказал' }
+  return `✅ Дозвон\nВремя: ${new Date().toLocaleString('ru')}\nДлительность: ${formatDuration(durationSec)}\nРезультат: ${labels[result] || result}`
+}
+
+function getWaTemplate(attemptNum, name, result) {
+  if (result === 'thinking') return `Здравствуйте, ${name}! Как ваше решение?\nГотов ответить на любые вопросы.`
+  if (result === 'meeting') return `Здравствуйте, ${name}! Спасибо за разговор!\nОжидаем вас на встрече. Если будут вопросы — напишите.`
+  if (attemptNum === 3) return `Здравствуйте, ${name}! Мы пробовали вам позвонить.\nУдобно ли созвониться сейчас?`
+  if (attemptNum >= 6) return `Здравствуйте, ${name}! Никак не можем дозвониться.\nУдобнее общаться в WhatsApp?`
+  return ''
 }
 
 export default function Dialer() {
   const [screen, setScreen] = useState(SCREEN.WAITING)
   const [queueStats, setQueueStats] = useState({ total: 0, overdue: 0 })
   const [currentLead, setCurrentLead] = useState(null)
-  const [callAttempts, setCallAttempts] = useState([])
   const [attemptCount, setAttemptCount] = useState(0)
-  const [callMode, setCallMode] = useState(null) // 'connected' | 'no_answer'
-  const [callResult, setCallResult] = useState(null)
   const [activeCallId, setActiveCallId] = useState(null)
-  const [waTemplate, setWaTemplate] = useState('')
   const [error, setError] = useState('')
   const [refreshing, setRefreshing] = useState(false)
 
+  // No answer state
+  const [naReason, setNaReason] = useState('')
+  const [naSaved, setNaSaved] = useState(false)
+  const [waText, setWaText] = useState('')
+  const [waSent, setWaSent] = useState(false)
+  const [waSending, setWaSending] = useState(false)
+  const [taskTitle, setTaskTitle] = useState('')
+  const [taskDeadline, setTaskDeadline] = useState('')
+  const [taskCreated, setTaskCreated] = useState(false)
+  const [taskCreating, setTaskCreating] = useState(false)
+  const [countdown, setCountdown] = useState(null)
+
+  // Connected state
+  const [connResult, setConnResult] = useState('')
+  const [connWaText, setConnWaText] = useState('')
+  const [connWaSent, setConnWaSent] = useState(false)
+  const [connWaSending, setConnWaSending] = useState(false)
+  const [connSaved, setConnSaved] = useState(false)
+
   const timer = useTimer(screen === SCREEN.ACTIVE)
+
+  // Countdown auto-advance
+  useEffect(() => {
+    if (countdown === null) return
+    if (countdown <= 0) { handleAutoAdvance(); return }
+    const t = setTimeout(() => setCountdown(c => c - 1), 1000)
+    return () => clearTimeout(t)
+  }, [countdown])
 
   const loadQueueStats = useCallback(async () => {
     try {
-      if (window.electronAPI?.queue) {
-        const stats = await window.electronAPI.queue.getStats()
-        setQueueStats(stats || { total: 0, overdue: 0 })
-      }
-    } catch (err) {
-      console.error('Failed to load queue stats:', err)
-    }
+      const stats = await window.electronAPI?.queue?.getStats()
+      setQueueStats(stats || { total: 0, overdue: 0 })
+    } catch {}
   }, [])
 
   useEffect(() => {
     loadQueueStats()
-    const interval = setInterval(loadQueueStats, 30000)
-    return () => clearInterval(interval)
+    const iv = setInterval(loadQueueStats, 30000)
+    return () => clearInterval(iv)
   }, [loadQueueStats])
+
+  function resetState() {
+    setCurrentLead(null)
+    setAttemptCount(0)
+    setActiveCallId(null)
+    setNaReason('')
+    setNaSaved(false)
+    setWaText('')
+    setWaSent(false)
+    setWaSending(false)
+    setTaskTitle('')
+    setTaskDeadline('')
+    setTaskCreated(false)
+    setTaskCreating(false)
+    setCountdown(null)
+    setConnResult('')
+    setConnWaText('')
+    setConnWaSent(false)
+    setConnWaSending(false)
+    setConnSaved(false)
+    setError('')
+  }
 
   async function handleReady() {
     setScreen(SCREEN.LOADING)
     setError('')
-
     try {
-      // Get next lead from queue
       const lead = await window.electronAPI?.queue?.getNext()
-
       if (!lead) {
-        setError('Очередь пуста. Новых лидов и задач нет.')
+        setError('Очередь пуста. Новых сделок и задач нет.')
         setScreen(SCREEN.WAITING)
         return
       }
-
-      // Load call history for this lead
-      const attempts = await window.electronAPI?.db?.getCallAttempts(lead.id || lead.data?.ID)
-      setCallAttempts(attempts || [])
-      setAttemptCount(attempts?.length || 0)
-      setCurrentLead(lead.data || lead)
-
-      // Show DIALING screen first — manager dials manually from SIP phone
+      const attempts = await window.electronAPI?.db?.getCallAttempts(lead.id) || []
+      setAttemptCount(attempts.length)
+      setCurrentLead(lead.data ? { ...lead.data, phone: lead.phone, name: lead.name, id: lead.id, entityType: lead.entityType } : lead)
       setScreen(SCREEN.DIALING)
     } catch (err) {
-      setError(err.message || 'Ошибка загрузки лида')
+      setError(err.message || 'Ошибка загрузки')
       setScreen(SCREEN.WAITING)
     }
   }
 
-  // Manager confirmed they started dialing — register in Bitrix24, start timer
   async function handleStartCall() {
     const leadId = currentLead?.ID || currentLead?.id
-    const phone = Array.isArray(currentLead?.PHONE)
-      ? currentLead.PHONE[0]?.VALUE
-      : currentLead?.phone || currentLead?.PHONE || ''
-
+    const phone = getPhone(currentLead)
+    const entityType = currentLead?.entityType || 'deal'
     if (phone && window.electronAPI?.bitrix) {
       try {
-        const result = await window.electronAPI.bitrix.initiateCall(leadId, phone)
-        setActiveCallId(result?.CALL_ID || null)
+        const res = await window.electronAPI.bitrix.initiateCall(leadId, phone)
+        setActiveCallId(res?.CALL_ID || null)
       } catch (err) {
-        console.warn('Bitrix call register failed:', err.message)
+        console.warn('initiateCall error:', err.message)
       }
     }
     setScreen(SCREEN.ACTIVE)
   }
 
-  async function handleCallEnd(mode) {
-    setCallMode(mode)
-    setScreen(SCREEN.RESULT)
-
-    // Finish call in Bitrix24
-    if (activeCallId && window.electronAPI?.bitrix) {
-      try {
-        await window.electronAPI.bitrix.finishCall(
-          activeCallId,
-          mode === 'connected' ? 'connected' : 'no_answer',
-          timer.seconds
-        )
-      } catch (err) {
-        console.warn('finishCall error:', err.message)
-      }
+  async function handleNoAnswer() {
+    if (activeCallId) {
+      try { await window.electronAPI?.bitrix?.finishCall(activeCallId, 'no_answer', timer.seconds) } catch {}
     }
+    const name = getName(currentLead)
+    const attempt = attemptCount + 1
+    setWaText(getWaTemplate(attempt, name, null))
+    setTaskTitle(`Перезвонить — ${name} (попытка #${attempt + 1})`)
+    const nextDay = new Date(); nextDay.setDate(nextDay.getDate() + 1); nextDay.setHours(9, 0, 0, 0)
+    setTaskDeadline(nextDay.toISOString().slice(0, 16))
+    setScreen(SCREEN.NO_ANSWER)
   }
 
-  async function handleResult(resultId) {
-    setCallResult(resultId)
+  async function handleConnected() {
+    if (activeCallId) {
+      try { await window.electronAPI?.bitrix?.finishCall(activeCallId, 'connected', timer.seconds) } catch {}
+    }
+    setScreen(SCREEN.CONNECTED)
+  }
+
+  async function handleSaveNoAnswer(reason) {
+    if (naSaved) return
     const leadId = currentLead?.ID || currentLead?.id
+    const phone = getPhone(currentLead)
+    const attempt = attemptCount + 1
+    setNaReason(reason)
 
-    if (!leadId) {
-      setScreen(SCREEN.WAITING)
-      return
-    }
-
-    // Calculate next attempt time for no-answer cases
-    const nextAttempt = attemptCount + 1
-    const now = new Date().toISOString()
     let nextCallAt = null
+    try { nextCallAt = await window.electronAPI?.scheduler?.calcNextAttempt(attempt) } catch {}
 
-    if (callMode !== 'connected' && nextAttempt < 6) {
-      try {
-        nextCallAt = await window.electronAPI?.scheduler?.calcNextAttempt(nextAttempt)
-      } catch {}
-    }
-
-    // Save attempt to DB
-    const phone = Array.isArray(currentLead?.PHONE)
-      ? currentLead.PHONE[0]?.VALUE
-      : currentLead?.phone || currentLead?.PHONE || ''
-
-    if (window.electronAPI?.db) {
-      await window.electronAPI.db.saveCallAttempt({
+    try {
+      await window.electronAPI?.db?.saveCallAttempt({
         lead_id: String(leadId),
         manager_id: 'current',
-        attempt_num: nextAttempt,
-        called_at: now,
+        attempt_num: attempt,
+        called_at: new Date().toISOString(),
         duration_sec: timer.seconds,
-        result: resultId,
+        result: reason,
         next_call_at: nextCallAt,
-        lead_name: leadName,
+        lead_name: getName(currentLead),
         lead_phone: phone,
         bitrix_call_id: activeCallId
       })
+    } catch {}
+
+    const entityType = currentLead?.entityType || 'deal'
+    const comment = formatNoAnswerComment(reason, attempt, nextCallAt)
+    try { await window.electronAPI?.bitrix?.addComment(String(leadId), comment) } catch {}
+
+    if (nextCallAt && attempt < 6) {
+      try {
+        await window.electronAPI?.bitrix?.createTask({
+          TITLE: `Перезвонить — ${getName(currentLead)} (попытка #${attempt + 1})`,
+          DEADLINE: nextCallAt,
+          UF_CRM_TASK: [entityType === 'deal' ? `D_${leadId}` : `L_${leadId}`],
+          DESCRIPTION: `Автодозвон: предыдущий результат — ${reason}`
+        })
+      } catch {}
     }
 
-    const leadName = currentLead?.name || currentLead?.NAME || currentLead?.TITLE || ''
-    const leadTopic = currentLead?.COMMENTS || 'вашей заявки'
-
-    if (callMode === 'connected') {
-      // Show WhatsApp compose for connected calls
-      let template = ''
-      if (resultId === 'thinking') {
-        template = `Здравствуйте, ${leadName}! Как ваше решение по ${leadTopic}?\nГотов ответить на любые вопросы.`
-      } else if (resultId === 'meeting') {
-        template = `Здравствуйте, ${leadName}! Спасибо за разговор!\nОжидаем вас на встрече. Если будут вопросы — напишите.`
-      }
-
-      // Create task in Bitrix24
-      if (window.electronAPI?.bitrix) {
-        const deadline = new Date()
-        if (resultId === 'meeting') {
-          deadline.setDate(deadline.getDate() + 1)
-        } else if (resultId === 'thinking') {
-          deadline.setDate(deadline.getDate() + 2)
-        } else {
-          deadline.setDate(deadline.getDate() + 7)
-        }
-
-        const taskLabels = {
-          meeting: 'Провести встречу',
-          thinking: 'Перезвонить (думает)',
-          rejected: 'Финальная попытка'
-        }
-
-        try {
-          await window.electronAPI.bitrix.createTask({
-            TITLE: `${taskLabels[resultId] || 'Задача'} — ${leadName}`,
-            DEADLINE: deadline.toISOString(),
-            UF_CRM_TASK: [`L_${leadId}`],
-            DESCRIPTION: `Результат звонка: ${resultId}`
-          })
-        } catch (err) {
-          console.warn('createTask error:', err.message)
-        }
-      }
-
-      // Add Bitrix comment
-      if (window.electronAPI?.bitrix) {
-        const resultLabels = {
-          meeting: 'Заинтересован — назначил встречу',
-          thinking: 'Заинтересован — думает, перезвонит',
-          rejected: 'Отказал — не интересно'
-        }
-        const comment = `✅ Дозвон\nВремя: ${new Date().toLocaleString('ru')}\nДлительность: ${Math.floor(timer.seconds/60)} мин ${timer.seconds%60} сек\nРезультат: ${resultLabels[resultId] || resultId}`
-        try {
-          await window.electronAPI.bitrix.addComment(String(leadId), comment)
-        } catch (err) {
-          console.warn('addComment error:', err.message)
-        }
-      }
-
-      // Schedule "thinking" follow-up WA in 2 days
-      if (resultId === 'thinking' && phone && window.electronAPI?.wa) {
-        const followUpDate = new Date()
-        followUpDate.setDate(followUpDate.getDate() + 2)
-        followUpDate.setHours(10, 0, 0, 0)
-        try {
-          await window.electronAPI.wa.schedule({
-            leadId: String(leadId),
-            phone,
-            message: `Здравствуйте, ${leadName}! Как ваше решение по ${leadTopic}?\nГотов ответить на любые вопросы.`,
-            sendAt: followUpDate.toISOString()
-          })
-        } catch {}
-      }
-
-      // Run AI analysis in background for connected calls
-      if (activeCallId && timer.seconds >= 30 && window.electronAPI?.ai) {
-        window.electronAPI.ai.runAnalysis({
-          callId: activeCallId,
-          leadId: String(leadId),
-          durationSec: timer.seconds
-        }).catch(err => console.warn('AI analysis error:', err))
-      }
-
-      if (template) {
-        setWaTemplate(template)
-        setScreen(SCREEN.WHATSAPP)
-      } else {
-        resetToWaiting()
-      }
-    } else {
-      // No answer — add comment and schedule retry
-      const resultLabels = {
-        no_answer: 'Не берёт трубку',
-        busy: 'Занято',
-        unavailable: 'Недоступен / вне зоны',
-        rejected_call: 'Сбросил вызов'
-      }
-
-      if (window.electronAPI?.bitrix) {
-        let comment = `📞 Автодозвон #${nextAttempt} — Недозвон\nВремя: ${new Date().toLocaleString('ru')}\nМенеджер: текущий\nРезультат: ${resultLabels[resultId] || resultId}`
-        if (nextCallAt) {
-          const nextDate = new Date(nextCallAt)
-          comment += `\nСледующая попытка: ${nextDate.toLocaleString('ru')}`
-        }
-        try {
-          await window.electronAPI.bitrix.addComment(String(leadId), comment)
-        } catch (err) {
-          console.warn('addComment error:', err.message)
-        }
-
-        // Create "Перезвонить" task for next attempt
-        if (nextCallAt) {
-          try {
-            await window.electronAPI.bitrix.createTask({
-              TITLE: `Перезвонить — ${leadName} (попытка #${nextAttempt + 1})`,
-              DEADLINE: nextCallAt,
-              UF_CRM_TASK: [`L_${leadId}`],
-              DESCRIPTION: `Автодозвон: предыдущий результат — ${resultLabels[resultId]}`
-            })
-          } catch {}
-        }
-      }
-
-      // After 6 failed attempts → update lead status
-      if (nextAttempt >= 6 && window.electronAPI?.bitrix) {
-        try {
-          await window.electronAPI.bitrix.updateLead(String(leadId), {
-            STATUS_ID: 'UC_REFUSE',
-            COMMENTS: 'Автодозвон: 6 попыток, не берёт трубку'
-          })
-        } catch {}
-      }
-
-      // Auto-WhatsApp on attempt 3 or 6
-      if (nextAttempt === 3 || nextAttempt >= 6) {
-        const phone = Array.isArray(currentLead?.PHONE)
-          ? currentLead.PHONE[0]?.VALUE
-          : currentLead?.phone || currentLead?.PHONE || ''
-
-        const name = currentLead?.name || currentLead?.NAME || ''
-        const topic = currentLead?.COMMENTS || 'вашей заявки'
-
-        let template
-        if (nextAttempt === 3) {
-          template = `Здравствуйте, ${name}! Мы пробовали вам позвонить насчёт ${topic}.\nУдобно ли созвониться сейчас?`
-        } else {
-          template = `Здравствуйте, ${name}! Никак не можем дозвониться.\nУдобнее общаться в WhatsApp?`
-        }
-
-        setWaTemplate(template)
-        setScreen(SCREEN.WHATSAPP)
-        return
-      }
-
-      resetToWaiting()
+    if (attempt >= 6) {
+      try {
+        await window.electronAPI?.bitrix?.updateLead(String(leadId), { COMMENTS: 'Автодозвон: 6 попыток без ответа' })
+      } catch {}
     }
+
+    setNaSaved(true)
+    setCountdown(5)
   }
 
-  function resetToWaiting() {
-    setScreen(SCREEN.WAITING)
-    setCurrentLead(null)
-    setCallAttempts([])
-    setAttemptCount(0)
-    setCallMode(null)
-    setCallResult(null)
-    setActiveCallId(null)
-    setWaTemplate('')
-    loadQueueStats()
-  }
-
-  async function handleRefresh() {
-    setRefreshing(true)
+  async function handleSendWa() {
+    const phone = getPhone(currentLead)
+    if (!phone || !waText.trim()) return
+    setWaSending(true)
     try {
-      await window.electronAPI?.queue?.refresh()
-      await loadQueueStats()
+      await window.electronAPI?.wazzup?.sendMessage(phone, waText)
+      setWaSent(true)
+    } catch (err) {
+      console.warn('WA send error:', err.message)
     } finally {
-      setRefreshing(false)
+      setWaSending(false)
+    }
+  }
+
+  async function handleCreateTask() {
+    const leadId = currentLead?.ID || currentLead?.id
+    const entityType = currentLead?.entityType || 'deal'
+    if (!taskTitle) return
+    setTaskCreating(true)
+    try {
+      await window.electronAPI?.bitrix?.createTask({
+        TITLE: taskTitle,
+        DEADLINE: taskDeadline ? new Date(taskDeadline).toISOString() : null,
+        UF_CRM_TASK: [entityType === 'deal' ? `D_${leadId}` : `L_${leadId}`]
+      })
+      setTaskCreated(true)
+    } catch (err) {
+      console.warn('createTask error:', err.message)
+    } finally {
+      setTaskCreating(false)
+    }
+  }
+
+  async function handleAutoAdvance() {
+    resetState()
+    await handleReady()
+  }
+
+  function handleSelectConnResult(result) {
+    setConnResult(result)
+    const name = getName(currentLead)
+    setConnWaText(getWaTemplate(attemptCount + 1, name, result))
+  }
+
+  async function handleSaveConnected() {
+    if (connSaved) return
+    const leadId = currentLead?.ID || currentLead?.id
+    const phone = getPhone(currentLead)
+    const entityType = currentLead?.entityType || 'deal'
+    const attempt = attemptCount + 1
+
+    try {
+      await window.electronAPI?.db?.saveCallAttempt({
+        lead_id: String(leadId),
+        manager_id: 'current',
+        attempt_num: attempt,
+        called_at: new Date().toISOString(),
+        duration_sec: timer.seconds,
+        result: connResult || 'connected',
+        lead_name: getName(currentLead),
+        lead_phone: phone,
+        bitrix_call_id: activeCallId
+      })
+    } catch {}
+
+    const comment = formatConnectedComment(connResult, timer.seconds)
+    try { await window.electronAPI?.bitrix?.addComment(String(leadId), comment) } catch {}
+
+    const stageMap = { meeting: 'EXECUTING', thinking: 'PREPAYMENT_INVOICE', rejected: 'LOSE' }
+    if (connResult && stageMap[connResult]) {
+      try { await window.electronAPI?.bitrix?.updateLead(String(leadId), { STAGE_ID: stageMap[connResult] }) } catch {}
+    }
+
+    if (activeCallId && timer.seconds >= 30) {
+      window.electronAPI?.ai?.runAnalysis({ callId: activeCallId, leadId: String(leadId), durationSec: timer.seconds })
+        .catch(() => {})
+    }
+
+    setConnSaved(true)
+  }
+
+  async function handleConnSendWa() {
+    const phone = getPhone(currentLead)
+    if (!phone || !connWaText.trim()) return
+    setConnWaSending(true)
+    try {
+      await window.electronAPI?.wazzup?.sendMessage(phone, connWaText)
+      setConnWaSent(true)
+    } catch {} finally {
+      setConnWaSending(false)
     }
   }
 
@@ -362,22 +370,17 @@ export default function Dialer() {
     try {
       const portal = await window.electronAPI?.bitrix?.getPortalUrl() || ''
       const settings = await window.electronAPI?.db?.getSettings() || {}
-      const crmType = settings.CRM_TYPE || 'deal'
-      const path = crmType === 'deal'
-        ? `/crm/deal/details/${entityId}/`
-        : `/crm/lead/details/${entityId}/`
-      window.open?.(`${portal}${path}`, '_blank')
+      const type = settings.CRM_TYPE || 'deal'
+      window.open?.(`${portal}/crm/${type}/details/${entityId}/`, '_blank')
     } catch {}
   }
 
   function copyPhone() {
-    const phone = Array.isArray(currentLead?.PHONE)
-      ? currentLead.PHONE[0]?.VALUE
-      : currentLead?.phone || currentLead?.PHONE || ''
-    if (phone) navigator.clipboard?.writeText(phone)
+    const phone = getPhone(currentLead)
+    if (phone) navigator.clipboard?.writeText(phone).catch(() => {})
   }
 
-  // ─── SCREEN: WAITING ───────────────────────────────────────────
+  // ─── WAITING ──────────────────────────────────────────────────
   if (screen === SCREEN.WAITING || screen === SCREEN.LOADING) {
     return (
       <div className="h-full flex flex-col items-center justify-center gap-8 px-8">
@@ -389,7 +392,6 @@ export default function Dialer() {
           <p className="text-slate-500">Готов к работе</p>
         </div>
 
-        {/* Queue stats */}
         <div className="flex gap-4">
           <div className="text-center px-6 py-4 bg-slate-800 border border-slate-700 rounded-xl">
             <p className="text-3xl font-bold text-slate-100">{queueStats.total}</p>
@@ -416,25 +418,16 @@ export default function Dialer() {
           <button
             onClick={handleReady}
             disabled={screen === SCREEN.LOADING}
-            className="btn-primary w-full text-lg py-4 flex items-center justify-center gap-2"
+            className="w-full text-lg py-4 flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white rounded-xl font-semibold transition-all active:scale-95"
           >
-            {screen === SCREEN.LOADING ? (
-              <>
-                <RefreshCw size={18} className="animate-spin" />
-                Загрузка...
-              </>
-            ) : (
-              <>
-                <Phone size={18} />
-                Я ГОТОВ
-              </>
-            )}
+            {screen === SCREEN.LOADING
+              ? <><RefreshCw size={18} className="animate-spin" /> Загрузка...</>
+              : <><Phone size={18} /> Я ГОТОВ</>}
           </button>
-
           <button
-            onClick={handleRefresh}
+            onClick={async () => { setRefreshing(true); await window.electronAPI?.queue?.refresh(); await loadQueueStats(); setRefreshing(false) }}
             disabled={refreshing}
-            className="btn-ghost w-full text-sm flex items-center justify-center gap-2"
+            className="w-full text-sm py-2.5 flex items-center justify-center gap-2 bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-400 rounded-xl transition-all"
           >
             <RefreshCw size={14} className={refreshing ? 'animate-spin' : ''} />
             Обновить очередь
@@ -444,70 +437,49 @@ export default function Dialer() {
     )
   }
 
-  // ─── SCREEN: DIALING ────────────────────────────────────────────
+  // ─── DIALING ──────────────────────────────────────────────────
   if (screen === SCREEN.DIALING) {
-    const phone = Array.isArray(currentLead?.PHONE)
-      ? currentLead.PHONE[0]?.VALUE
-      : currentLead?.phone || currentLead?.PHONE || ''
-    const name = currentLead?.name || currentLead?.NAME || currentLead?.TITLE || ''
+    const phone = getPhone(currentLead)
+    const name = getName(currentLead)
     const attempt = attemptCount + 1
 
     return (
-      <div className="h-full flex flex-col items-center justify-center gap-6 p-6">
-        {/* Attempt badge */}
-        <div className="text-xs font-semibold text-slate-500 uppercase tracking-wide">
+      <div className="h-full flex flex-col items-center justify-center gap-5 p-6">
+        <div className="text-xs font-semibold text-slate-500 uppercase tracking-widest">
           Звонок #{attempt} из 6
         </div>
 
-        {/* Name */}
         <div className="text-center">
           <p className="text-2xl font-bold text-slate-100">{name}</p>
-          <p className="text-sm text-slate-500 mt-1">
-            {currentLead?.SOURCE_ID || currentLead?.STAGE_ID || ''}
-          </p>
+          <p className="text-sm text-slate-500 mt-1">{currentLead?.SOURCE_ID || currentLead?.STAGE_ID || ''}</p>
         </div>
 
-        {/* Big phone number */}
-        <div
+        <button
           onClick={copyPhone}
-          className="bg-slate-800 border-2 border-blue-500/40 rounded-2xl px-8 py-5 cursor-pointer hover:border-blue-500/70 transition-colors text-center group"
-          title="Нажми чтобы скопировать"
+          className="bg-slate-800 border-2 border-blue-500/40 hover:border-blue-500/70 rounded-2xl px-8 py-5 transition-colors text-center group w-full max-w-xs"
         >
-          <p className="text-3xl font-mono font-bold text-blue-300 tracking-wider">
-            {formatPhone(phone)}
-          </p>
-          <p className="text-xs text-slate-600 mt-2 group-hover:text-slate-400 transition-colors">
-            нажми чтобы скопировать
-          </p>
-        </div>
+          <p className="text-3xl font-mono font-bold text-blue-300 tracking-wider">{formatPhone(phone)}</p>
+          <div className="flex items-center justify-center gap-1.5 mt-2 text-xs text-slate-600 group-hover:text-slate-400 transition-colors">
+            <Copy size={11} /> скопировать
+          </div>
+        </button>
 
-        {/* Instructions */}
         <div className="bg-slate-800/50 border border-slate-700 rounded-xl px-5 py-3 text-sm text-slate-400 text-center max-w-xs">
           Наберите номер на SIP телефоне, затем нажмите <strong className="text-slate-200">«Начать звонок»</strong>
         </div>
 
-        {/* Actions */}
         <div className="flex flex-col gap-3 w-full max-w-xs">
           <button
             onClick={handleStartCall}
-            className="btn-success w-full text-lg py-4 flex items-center justify-center gap-2"
+            className="w-full text-lg py-4 flex items-center justify-center gap-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl font-semibold transition-all active:scale-95"
           >
-            <Phone size={20} />
-            Начать звонок
+            <Phone size={20} /> Начать звонок
           </button>
-
           <div className="flex gap-2">
-            <button
-              onClick={openInBitrix}
-              className="btn-ghost flex-1 text-sm flex items-center justify-center gap-1.5"
-            >
-              <ExternalLink size={14} />
-              Открыть в Bitrix24
+            <button onClick={openInBitrix} className="flex-1 text-sm py-2.5 flex items-center justify-center gap-1.5 bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-400 rounded-xl transition-all">
+              <ExternalLink size={13} /> Bitrix24
             </button>
-            <button
-              onClick={() => { setCurrentLead(null); setScreen(SCREEN.WAITING) }}
-              className="btn-ghost flex-1 text-sm text-slate-500"
-            >
+            <button onClick={() => { resetState(); setScreen(SCREEN.WAITING) }} className="flex-1 text-sm py-2.5 bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-500 rounded-xl transition-all">
               Пропустить
             </button>
           </div>
@@ -516,113 +488,249 @@ export default function Dialer() {
     )
   }
 
-  // ─── SCREEN: ACTIVE CALL ────────────────────────────────────────
+  // ─── ACTIVE ───────────────────────────────────────────────────
   if (screen === SCREEN.ACTIVE) {
-    const phone = Array.isArray(currentLead?.PHONE)
-      ? currentLead.PHONE[0]?.VALUE
-      : currentLead?.phone || currentLead?.PHONE || ''
+    const phone = getPhone(currentLead)
+    const name = getName(currentLead)
 
     return (
-      <div className="h-full flex flex-col gap-4 p-6 overflow-y-auto">
-        {/* Timer & actions */}
+      <div className="h-full flex flex-col gap-4 p-5 overflow-y-auto">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
-            <div className="w-3 h-3 bg-emerald-400 rounded-full animate-pulse" />
-            <span className="text-xl font-mono font-bold text-emerald-400">{timer.display}</span>
-            <span className="text-sm text-slate-500">Звонок активен</span>
+            <div className="w-2.5 h-2.5 bg-emerald-400 rounded-full animate-pulse" />
+            <span className="text-2xl font-mono font-bold text-emerald-400">{timer.display}</span>
           </div>
-          <button
-            onClick={openInBitrix}
-            className="flex items-center gap-1.5 text-sm text-slate-500 hover:text-slate-300 transition-colors"
-          >
-            <ExternalLink size={14} />
-            Bitrix24
+          <button onClick={openInBitrix} className="flex items-center gap-1.5 text-xs text-slate-500 hover:text-slate-300 transition-colors">
+            <ExternalLink size={12} /> Bitrix24
           </button>
         </div>
 
-        {/* Lead card */}
-        <LeadCard
-          lead={currentLead}
-          attempts={callAttempts}
-          attemptCount={attemptCount}
-          maxAttempts={6}
-        />
+        <div className="bg-slate-800 border border-slate-700 rounded-xl p-4">
+          <p className="font-bold text-slate-100 text-lg">{name}</p>
+          <p className="text-blue-400 font-mono text-sm mt-1">{formatPhone(phone)}</p>
+          <p className="text-xs text-slate-500 mt-1">Попытка #{attemptCount + 1} из 6</p>
+        </div>
 
-        {/* Script */}
         <ScriptPanel lead={currentLead} attemptNum={attemptCount + 1} />
 
-        {/* Call end buttons */}
         <div className="flex gap-3 mt-auto pt-2">
           <button
-            onClick={() => handleCallEnd('no_answer')}
-            className="btn-danger flex-1 flex items-center justify-center gap-2"
+            onClick={handleNoAnswer}
+            className="flex-1 py-4 flex items-center justify-center gap-2 bg-red-600 hover:bg-red-500 text-white rounded-xl font-bold text-lg transition-all active:scale-95"
           >
-            <PhoneOff size={18} />
-            Недозвон
+            <PhoneOff size={20} /> НЕДОЗВОН
           </button>
           <button
-            onClick={() => handleCallEnd('connected')}
-            className="btn-success flex-1 flex items-center justify-center gap-2"
+            onClick={handleConnected}
+            className="flex-1 py-4 flex items-center justify-center gap-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl font-bold text-lg transition-all active:scale-95"
           >
-            <PhoneCall size={18} />
-            Дозвон
+            <PhoneCall size={20} /> ДОЗВОН
           </button>
         </div>
       </div>
     )
   }
 
-  // ─── SCREEN: RESULT ─────────────────────────────────────────────
-  if (screen === SCREEN.RESULT) {
+  // ─── NO_ANSWER ────────────────────────────────────────────────
+  if (screen === SCREEN.NO_ANSWER) {
+    const phone = getPhone(currentLead)
+    const name = getName(currentLead)
+    const attempt = attemptCount + 1
+    const showWaTemplate = attempt === 3 || attempt >= 6
+
     return (
-      <div className="h-full flex flex-col gap-6 p-6 overflow-y-auto">
-        {/* Lead name */}
+      <div className="h-full flex flex-col gap-4 p-5 overflow-y-auto">
+        {/* Header */}
         <div className="flex items-center gap-3">
-          <div className={`w-10 h-10 rounded-xl flex items-center justify-center ${
-            callMode === 'connected'
-              ? 'bg-emerald-600/20 border border-emerald-600/30'
-              : 'bg-red-600/20 border border-red-600/30'
-          }`}>
-            {callMode === 'connected'
-              ? <PhoneCall size={18} className="text-emerald-400" />
-              : <PhoneOff size={18} className="text-red-400" />
-            }
+          <div className="w-10 h-10 bg-red-600/20 border border-red-600/30 rounded-xl flex items-center justify-center">
+            <PhoneOff size={18} className="text-red-400" />
           </div>
           <div>
-            <p className="font-bold text-slate-100">
-              {currentLead?.name || currentLead?.NAME || currentLead?.TITLE}
-            </p>
-            <p className="text-xs text-slate-500">
-              {callMode === 'connected' ? `Разговор ${timer.display}` : 'Не удалось дозвониться'}
-            </p>
+            <p className="font-bold text-slate-100">{name}</p>
+            <p className="text-xs text-slate-500">Недозвон #{attempt} из 6</p>
           </div>
         </div>
 
-        <CallResult
-          mode={callMode}
-          onResult={handleResult}
-          onBack={() => setScreen(SCREEN.ACTIVE)}
-        />
+        {/* Reason */}
+        <div>
+          <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-2">Причина</p>
+          <div className="grid grid-cols-2 gap-2">
+            {NO_ANSWER_REASONS.map(r => (
+              <button
+                key={r.id}
+                onClick={() => !naSaved && handleSaveNoAnswer(r.id)}
+                className={`py-2.5 px-3 rounded-xl text-sm font-medium border transition-all ${
+                  naReason === r.id
+                    ? 'bg-red-600/20 border-red-500 text-red-300'
+                    : 'bg-slate-800 border-slate-700 text-slate-400 hover:border-slate-500'
+                }`}
+              >
+                {r.label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* WhatsApp */}
+        {naReason && (
+          <div className="bg-slate-800 border border-slate-700 rounded-xl p-4">
+            <div className="flex items-center gap-2 mb-3">
+              <MessageCircle size={15} className="text-green-400" />
+              <p className="text-sm font-semibold text-slate-300">WhatsApp сообщение</p>
+              {waSent && <CheckCircle size={14} className="text-emerald-400 ml-auto" />}
+            </div>
+            <textarea
+              value={waText}
+              onChange={e => setWaText(e.target.value)}
+              placeholder={showWaTemplate ? '' : 'Напишите сообщение вручную (необязательно)'}
+              rows={3}
+              className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 resize-none focus:outline-none focus:border-blue-500"
+            />
+            {!waSent ? (
+              <button
+                onClick={handleSendWa}
+                disabled={waSending || !waText.trim() || !phone}
+                className="mt-2 w-full py-2 bg-green-600 hover:bg-green-500 disabled:opacity-40 text-white text-sm rounded-lg font-semibold transition-all"
+              >
+                {waSending ? 'Отправка...' : 'Отправить в WhatsApp'}
+              </button>
+            ) : (
+              <p className="mt-2 text-xs text-emerald-400 text-center">✓ Сообщение отправлено</p>
+            )}
+          </div>
+        )}
+
+        {/* Task */}
+        {naReason && (
+          <div className="bg-slate-800 border border-slate-700 rounded-xl p-4">
+            <div className="flex items-center gap-2 mb-3">
+              <Clock size={15} className="text-blue-400" />
+              <p className="text-sm font-semibold text-slate-300">Задача в Bitrix24</p>
+              {taskCreated && <CheckCircle size={14} className="text-emerald-400 ml-auto" />}
+            </div>
+            <input
+              value={taskTitle}
+              onChange={e => setTaskTitle(e.target.value)}
+              placeholder="Название задачи"
+              className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-blue-500 mb-2"
+            />
+            <input
+              type="datetime-local"
+              value={taskDeadline}
+              onChange={e => setTaskDeadline(e.target.value)}
+              className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 focus:outline-none focus:border-blue-500"
+            />
+            {!taskCreated ? (
+              <button
+                onClick={handleCreateTask}
+                disabled={taskCreating || !taskTitle}
+                className="mt-2 w-full py-2 bg-blue-600 hover:bg-blue-500 disabled:opacity-40 text-white text-sm rounded-lg font-semibold transition-all"
+              >
+                {taskCreating ? 'Создание...' : 'Создать задачу'}
+              </button>
+            ) : (
+              <p className="mt-2 text-xs text-emerald-400 text-center">✓ Задача создана</p>
+            )}
+          </div>
+        )}
+
+        {/* Auto advance */}
+        {naReason && (
+          <div className="bg-slate-900 border border-slate-700 rounded-xl p-4 flex items-center justify-between mt-auto">
+            <div>
+              <p className="text-sm text-slate-400">
+                {countdown !== null && countdown > 0
+                  ? `Следующий лид через ${countdown}...`
+                  : 'Переход к следующему лиду'}
+              </p>
+            </div>
+            <button
+              onClick={handleAutoAdvance}
+              className="flex items-center gap-1.5 bg-blue-600 hover:bg-blue-500 text-white text-sm px-4 py-2 rounded-lg font-semibold transition-all"
+            >
+              Следующий <ChevronRight size={15} />
+            </button>
+          </div>
+        )}
       </div>
     )
   }
 
-  // ─── SCREEN: WHATSAPP ────────────────────────────────────────────
-  if (screen === SCREEN.WHATSAPP) {
+  // ─── CONNECTED ────────────────────────────────────────────────
+  if (screen === SCREEN.CONNECTED) {
+    const phone = getPhone(currentLead)
+    const name = getName(currentLead)
+
     return (
-      <div className="h-full flex flex-col gap-6 p-6 overflow-y-auto">
-        <div>
-          <h2 className="text-lg font-bold text-slate-100">Отправить сообщение</h2>
-          <p className="text-sm text-slate-500 mt-1">
-            {currentLead?.name || currentLead?.NAME || 'Клиент'}
-          </p>
+      <div className="h-full flex flex-col gap-4 p-5 overflow-y-auto">
+        {/* Header */}
+        <div className="flex items-center gap-3">
+          <div className="w-10 h-10 bg-emerald-600/20 border border-emerald-600/30 rounded-xl flex items-center justify-center">
+            <PhoneCall size={18} className="text-emerald-400" />
+          </div>
+          <div>
+            <p className="font-bold text-slate-100">{name}</p>
+            <p className="text-xs text-emerald-500">Дозвон · {formatDuration(timer.seconds)}</p>
+          </div>
         </div>
-        <WaMessage
-          lead={currentLead}
-          template={waTemplate}
-          onSend={resetToWaiting}
-          onSkip={resetToWaiting}
-        />
+
+        {/* Result */}
+        <div>
+          <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide mb-2">Результат разговора</p>
+          <div className="flex flex-col gap-2">
+            {CONNECTED_RESULTS.map(r => (
+              <button
+                key={r.id}
+                onClick={() => !connSaved && handleSelectConnResult(r.id)}
+                className={`py-3 px-4 rounded-xl text-sm font-semibold border text-left transition-all ${
+                  connResult === r.id
+                    ? 'bg-emerald-600/20 border-emerald-500 text-emerald-300'
+                    : 'bg-slate-800 border-slate-700 text-slate-300 hover:border-slate-500'
+                }`}
+              >
+                {r.label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* WhatsApp */}
+        {connResult && (
+          <div className="bg-slate-800 border border-slate-700 rounded-xl p-4">
+            <div className="flex items-center gap-2 mb-3">
+              <MessageCircle size={15} className="text-green-400" />
+              <p className="text-sm font-semibold text-slate-300">WhatsApp</p>
+              {connWaSent && <CheckCircle size={14} className="text-emerald-400 ml-auto" />}
+            </div>
+            <textarea
+              value={connWaText}
+              onChange={e => setConnWaText(e.target.value)}
+              placeholder="Сообщение клиенту (необязательно)"
+              rows={3}
+              className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-sm text-slate-200 resize-none focus:outline-none focus:border-blue-500"
+            />
+            {!connWaSent && connWaText.trim() && (
+              <button
+                onClick={handleConnSendWa}
+                disabled={connWaSending || !phone}
+                className="mt-2 w-full py-2 bg-green-600 hover:bg-green-500 disabled:opacity-40 text-white text-sm rounded-lg font-semibold transition-all"
+              >
+                {connWaSending ? 'Отправка...' : 'Отправить в WhatsApp'}
+              </button>
+            )}
+            {connWaSent && <p className="mt-2 text-xs text-emerald-400 text-center">✓ Отправлено</p>}
+          </div>
+        )}
+
+        {/* Finish */}
+        {connResult && (
+          <button
+            onClick={async () => { await handleSaveConnected(); resetState(); setScreen(SCREEN.WAITING); loadQueueStats() }}
+            className="w-full py-3.5 flex items-center justify-center gap-2 bg-blue-600 hover:bg-blue-500 text-white rounded-xl font-bold transition-all active:scale-95 mt-auto"
+          >
+            Завершить и следующий лид <ChevronRight size={18} />
+          </button>
+        )}
       </div>
     )
   }
