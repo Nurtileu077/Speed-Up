@@ -55,6 +55,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
     schedule: (data) => ipcRenderer.invoke('wa:schedule', data)
   },
 
+  // Auto-dialer — triggers tel: URI to open SIP client
+  dialer: {
+    call: (phone) => ipcRenderer.invoke('dialer:call', phone)
+  },
+
   // Navigation from tray
   onNavigate: (callback) => ipcRenderer.on('navigate', (_, route) => callback(route))
 })

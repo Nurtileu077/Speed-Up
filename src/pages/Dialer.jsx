@@ -113,6 +113,7 @@ export default function Dialer() {
   const [taskCreated, setTaskCreated] = useState(false)
   const [taskCreating, setTaskCreating] = useState(false)
   const [countdown, setCountdown] = useState(null)
+  const [dialCountdown, setDialCountdown] = useState(null)
 
   // Connected state
   const [connResult, setConnResult] = useState('')
@@ -123,7 +124,20 @@ export default function Dialer() {
 
   const timer = useTimer(screen === SCREEN.ACTIVE)
 
-  // Countdown auto-advance
+  // Auto-dial countdown: when on DIALING screen, count down from 3 then auto-call
+  useEffect(() => {
+    if (screen !== SCREEN.DIALING) { setDialCountdown(null); return }
+    setDialCountdown(3)
+  }, [screen, currentLead])
+
+  useEffect(() => {
+    if (dialCountdown === null) return
+    if (dialCountdown <= 0) { handleStartCall(); return }
+    const t = setTimeout(() => setDialCountdown(c => c - 1), 1000)
+    return () => clearTimeout(t)
+  }, [dialCountdown])
+
+  // Countdown auto-advance (no-answer)
   useEffect(() => {
     if (countdown === null) return
     if (countdown <= 0) { handleAutoAdvance(); return }
@@ -158,6 +172,7 @@ export default function Dialer() {
     setTaskCreated(false)
     setTaskCreating(false)
     setCountdown(null)
+    setDialCountdown(null)
     setConnResult('')
     setConnWaText('')
     setConnWaSent(false)
@@ -187,6 +202,15 @@ export default function Dialer() {
   }
 
   async function handleStartCall() {
+    setDialCountdown(null)
+    const phone = getPhone(currentLead)
+    if (phone) {
+      try {
+        await window.electronAPI?.dialer?.call(phone)
+      } catch (err) {
+        console.warn('Auto-dial error:', err.message)
+      }
+    }
     setScreen(SCREEN.ACTIVE)
   }
 
@@ -453,16 +477,23 @@ export default function Dialer() {
           </div>
         </button>
 
-        <div className="bg-slate-800/50 border border-slate-700 rounded-xl px-5 py-3 text-sm text-slate-400 text-center max-w-xs">
-          Наберите номер на SIP телефоне, затем нажмите <strong className="text-slate-200">«Начать звонок»</strong>
-        </div>
+        {dialCountdown !== null && dialCountdown > 0 ? (
+          <div className="bg-blue-600/20 border border-blue-500/40 rounded-xl px-5 py-4 text-center max-w-xs w-full">
+            <p className="text-blue-300 text-sm mb-1">Автодозвон через...</p>
+            <p className="text-5xl font-bold text-blue-200">{dialCountdown}</p>
+          </div>
+        ) : (
+          <div className="bg-emerald-600/20 border border-emerald-500/40 rounded-xl px-5 py-3 text-sm text-emerald-400 text-center max-w-xs">
+            Соединение...
+          </div>
+        )}
 
         <div className="flex flex-col gap-3 w-full max-w-xs">
           <button
             onClick={handleStartCall}
             className="w-full text-lg py-4 flex items-center justify-center gap-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl font-semibold transition-all active:scale-95"
           >
-            <Phone size={20} /> Начать звонок
+            <Phone size={20} /> Позвонить сейчас
           </button>
           <div className="flex gap-2">
             <button onClick={openInBitrix} className="flex-1 text-sm py-2.5 flex items-center justify-center gap-1.5 bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-400 rounded-xl transition-all">

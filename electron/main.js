@@ -393,6 +393,18 @@ ipcMain.handle('bitrix:getPortalUrl', async () => {
   return settings.BITRIX_PORTAL || ''
 })
 
+// IPC Handlers - Auto-dial via tel: URI (triggers SIP client)
+ipcMain.handle('dialer:call', async (event, phone) => {
+  try {
+    const clean = String(phone).replace(/\D/g, '')
+    const tel = clean.startsWith('8') ? '+7' + clean.slice(1) : (clean.startsWith('7') ? '+' + clean : '+7' + clean)
+    shell.openExternal('tel:' + tel)
+    return { ok: true, tel }
+  } catch (err) {
+    return { ok: false, error: err.message }
+  }
+})
+
 app.whenReady().then(() => {
   // Initialize DB first
   try {
