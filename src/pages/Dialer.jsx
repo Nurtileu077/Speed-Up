@@ -187,17 +187,6 @@ export default function Dialer() {
   }
 
   async function handleStartCall() {
-    const leadId = currentLead?.ID || currentLead?.id
-    const phone = getPhone(currentLead)
-    const entityType = currentLead?.entityType || 'deal'
-    if (phone && window.electronAPI?.bitrix) {
-      try {
-        const res = await window.electronAPI.bitrix.initiateCall(leadId, phone)
-        setActiveCallId(res?.CALL_ID || null)
-      } catch (err) {
-        console.warn('initiateCall error:', err.message)
-      }
-    }
     setScreen(SCREEN.ACTIVE)
   }
 
