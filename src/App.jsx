@@ -1,14 +1,16 @@
 import React from 'react'
 import { BrowserRouter, Routes, Route, NavLink, Navigate } from 'react-router-dom'
-import { Phone, BarChart2, Settings, Clock } from 'lucide-react'
+import { Phone, BarChart2, Settings, Clock, Zap } from 'lucide-react'
 import Dialer from './pages/Dialer'
 import Dashboard from './pages/Dashboard'
 import SettingsPage from './pages/Settings'
 import History from './pages/History'
+import PowerDialer from './pages/PowerDialer'
 
 function Sidebar() {
   const navItems = [
     { to: '/dialer', icon: Phone, label: 'Дозвон' },
+    { to: '/power', icon: Zap, label: 'Пакет' },
     { to: '/dashboard', icon: BarChart2, label: 'Дашборд' },
     { to: '/history', icon: Clock, label: 'История' },
     { to: '/settings', icon: Settings, label: 'Настройки' }
@@ -50,6 +52,7 @@ export default function App() {
           <Routes>
             <Route path="/" element={<Navigate to="/dialer" replace />} />
             <Route path="/dialer" element={<Dialer />} />
+            <Route path="/power" element={<PowerDialer />} />
             <Route path="/dashboard" element={<Dashboard />} />
             <Route path="/history" element={<History />} />
             <Route path="/settings" element={<SettingsPage />} />
