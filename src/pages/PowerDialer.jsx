@@ -198,8 +198,7 @@ export default function PowerDialer() {
     if (item?.status !== STATUS.DIALING) return
     const phone = getPhone(item.lead)
     if (phone) {
-      if (sipSt === 'registered') sipCall(phone)
-      else window.electronAPI?.dialer?.call(phone).catch(() => {})
+      window.electronAPI?.dialer?.call(phone).catch(() => {})
     }
   }, [currentIndex, isRunning, leads])
 

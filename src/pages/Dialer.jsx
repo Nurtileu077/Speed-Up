@@ -141,12 +141,7 @@ export default function Dialer() {
     if (screen !== SCREEN.DIALING || !currentLead) return
     const phone = getPhone(currentLead)
     if (!phone) return
-    // Use built-in SIP if registered, else fallback to tel: URI
-    if (sipSt === 'registered') {
-      sipCall(phone)
-    } else {
-      window.electronAPI?.dialer?.call(phone).catch(() => {})
-    }
+    window.electronAPI?.dialer?.call(phone).catch(() => {})
   }, [screen, currentLead])
 
   // Countdown auto-advance (no-answer)
