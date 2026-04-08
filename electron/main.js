@@ -419,9 +419,18 @@ ipcMain.handle('bitrix:getPortalUrl', async () => {
 ipcMain.handle('dialer:call', async (event, phone) => {
   try {
     const clean = String(phone).replace(/\D/g, '')
-    const tel = clean.startsWith('8') ? '+7' + clean.slice(1) : (clean.startsWith('7') ? '+' + clean : '+7' + clean)
-    shell.openExternal('tel:' + tel)
-    return { ok: true, tel }
+    const normalized = clean.startsWith('8') ? '+7' + clean.slice(1)
+      : (clean.startsWith('7') && clean.length === 11) ? '+' + clean
+      : '+7' + clean
+
+    const settings = require('../src/services/db-main').getSettings()
+    const sipServer = settings.SIP_SERVER || 'pbx.zadarma.com'
+
+    // Use sip: URI — Zoiper handles it directly, FaceTime doesn't intercept
+    const uri = `sip:${normalized}@${sipServer}`
+    shell.openExternal(uri)
+    console.log('[Dialer] Calling via sip: URI:', uri)
+    return { ok: true, uri }
   } catch (err) {
     return { ok: false, error: err.message }
   }
