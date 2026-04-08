@@ -9,6 +9,13 @@ const SETTINGS_FIELDS = [
     { key: 'CRM_TYPE', label: 'Тип CRM', placeholder: 'deal', type: 'select',
       options: [{ value: 'deal', label: 'Сделки (Deals)' }, { value: 'lead', label: 'Лиды (Leads)' }] }
   ]},
+  { section: 'SIP (встроенный телефон)', fields: [
+    { key: 'SIP_WS_URL',      label: 'WebSocket URL сервера', placeholder: 'wss://sip.beeline.kz:8089/ws', type: 'text' },
+    { key: 'SIP_SERVER',      label: 'SIP домен (если отличается)', placeholder: 'sip.beeline.kz', type: 'text' },
+    { key: 'SIP_USERNAME',    label: 'Логин (номер/extension)', placeholder: '1001', type: 'text' },
+    { key: 'SIP_PASSWORD',    label: 'Пароль SIP', placeholder: '••••••••', type: 'password' },
+    { key: 'SIP_DISPLAY_NAME',label: 'Имя сотрудника', placeholder: 'Менеджер Алматы', type: 'text' }
+  ]},
   { section: 'Wazzup (WhatsApp)', fields: [
     { key: 'WAZZUP_API_KEY', label: 'API Key', placeholder: 'your_wazzup_api_key', type: 'password' },
     { key: 'WAZZUP_CHANNEL_ID', label: 'Channel ID', placeholder: 'your_channel_id', type: 'text' }

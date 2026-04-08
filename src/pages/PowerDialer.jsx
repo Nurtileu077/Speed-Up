@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react'
 import { Phone, PhoneOff, CheckCircle, XCircle, ChevronRight, RefreshCw, Zap, PhoneCall } from 'lucide-react'
+import useSip from '../hooks/useSip'
 
 const STATUS = {
   PENDING:  'pending',
@@ -169,6 +170,22 @@ export default function PowerDialer() {
   const currentItem = leads[currentIndex] || null
   const timer = useTimer(currentItem?.status === STATUS.ACTIVE)
 
+  const { sipSt, sipLabel, call: sipCall, hangup: sipHangup } = useSip({
+    onCallActive: () => {
+      setLeads(prev => prev.map((it, i) =>
+        i === currentIndex && it.status === STATUS.DIALING ? { ...it, status: STATUS.ACTIVE } : it
+      ))
+    },
+    onCallEnded:  () => {
+      const item = leads[currentIndex]
+      if (item?.status === STATUS.DIALING) quickNoAnswer('no_answer')
+    },
+    onCallFailed: () => {
+      const item = leads[currentIndex]
+      if (item?.status === STATUS.DIALING) quickNoAnswer('no_answer')
+    }
+  })
+
   // Load settings once
   useEffect(() => {
     window.electronAPI?.db?.getSettings().then(s => setSettings(s || {})).catch(() => {})
@@ -181,7 +198,8 @@ export default function PowerDialer() {
     if (item?.status !== STATUS.DIALING) return
     const phone = getPhone(item.lead)
     if (phone) {
-      window.electronAPI?.dialer?.call(phone).catch(() => {})
+      if (sipSt === 'registered') sipCall(phone)
+      else window.electronAPI?.dialer?.call(phone).catch(() => {})
     }
   }, [currentIndex, isRunning, leads])
 
@@ -219,6 +237,7 @@ export default function PowerDialer() {
   }
 
   async function markResult(resultId) {
+    sipHangup()
     const item = leads[currentIndex]
     if (!item) return
     const durationSec = timer.seconds

@@ -4,6 +4,7 @@ import {
   AlertTriangle, MessageCircle, CheckCircle, Clock, ChevronRight, Copy
 } from 'lucide-react'
 import ScriptPanel from '../components/ScriptPanel'
+import useSip from '../hooks/useSip'
 
 const SCREEN = {
   WAITING: 'waiting',
@@ -102,6 +103,12 @@ export default function Dialer() {
   const [error, setError] = useState('')
   const [refreshing, setRefreshing] = useState(false)
 
+  const { sipSt, sipLabel, call: sipCall, hangup: sipHangup } = useSip({
+    onCallActive: () => { if (screen === SCREEN.DIALING) setScreen(SCREEN.ACTIVE) },
+    onCallEnded:  () => { if (screen === SCREEN.DIALING) handleNoAnswer() },
+    onCallFailed: () => { if (screen === SCREEN.DIALING) handleNoAnswer() }
+  })
+
   // No answer state
   const [naReason, setNaReason] = useState('')
   const [naSaved, setNaSaved] = useState(false)
@@ -133,7 +140,13 @@ export default function Dialer() {
   useEffect(() => {
     if (screen !== SCREEN.DIALING || !currentLead) return
     const phone = getPhone(currentLead)
-    if (phone) window.electronAPI?.dialer?.call(phone).catch(() => {})
+    if (!phone) return
+    // Use built-in SIP if registered, else fallback to tel: URI
+    if (sipSt === 'registered') {
+      sipCall(phone)
+    } else {
+      window.electronAPI?.dialer?.call(phone).catch(() => {})
+    }
   }, [screen, currentLead])
 
   // Countdown auto-advance (no-answer)
@@ -204,6 +217,7 @@ export default function Dialer() {
   }
 
   async function handleNoAnswer() {
+    sipHangup()
     if (activeCallId) {
       try { await window.electronAPI?.bitrix?.finishCall(activeCallId, 'no_answer', timer.seconds) } catch {}
     }
@@ -217,6 +231,7 @@ export default function Dialer() {
   }
 
   async function handleConnected() {
+    sipHangup()
     if (activeCallId) {
       try { await window.electronAPI?.bitrix?.finishCall(activeCallId, 'connected', timer.seconds) } catch {}
     }
@@ -498,11 +513,14 @@ export default function Dialer() {
         </button>
 
         <div className="bg-yellow-500/10 border border-yellow-500/30 rounded-xl px-5 py-4 text-center max-w-xs w-full">
-          <div className="flex items-center justify-center gap-2 text-yellow-400 mb-1">
-            <PhoneCall size={16} className="animate-pulse" />
-            <span className="text-sm font-medium">Идёт набор номера...</span>
+          <div className="flex items-center justify-center gap-2 mb-1">
+            <PhoneCall size={16} className={`animate-pulse ${sipLabel.color}`} />
+            <span className={`text-sm font-medium ${sipLabel.color}`}>{sipLabel.text}</span>
           </div>
-          <p className="text-xs text-slate-500">Когда клиент ответил — нажмите «Ответил»</p>
+          {sipSt === 'unconfigured'
+            ? <p className="text-xs text-slate-500">Настройте SIP в разделе Настройки → звонок пойдёт прямо через приложение</p>
+            : <p className="text-xs text-slate-500">Когда клиент ответил — нажмите «Ответил»</p>
+          }
         </div>
 
         <div className="flex flex-col gap-3 w-full max-w-xs">

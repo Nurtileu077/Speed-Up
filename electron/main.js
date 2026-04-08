@@ -50,6 +50,16 @@ function createWindow() {
     return { action: 'deny' }
   })
 
+  // Allow microphone for built-in SIP softphone
+  mainWindow.webContents.session.setPermissionRequestHandler((wc, permission, callback) => {
+    if (permission === 'media') callback(true)
+    else callback(false)
+  })
+  mainWindow.webContents.session.setPermissionCheckHandler((wc, permission) => {
+    if (permission === 'media') return true
+    return false
+  })
+
   setupMenu()
 }
 
