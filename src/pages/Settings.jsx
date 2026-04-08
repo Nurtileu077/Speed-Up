@@ -21,6 +21,12 @@ const SETTINGS_FIELDS = [
     { key: 'TELEGRAM_BOT_TOKEN', label: 'Bot Token', placeholder: '123456:ABC...', type: 'password' },
     { key: 'TELEGRAM_CHAT_ID', label: 'Chat ID руководителя', placeholder: '-100123456789', type: 'text' }
   ]},
+  { section: 'Этапы Bitrix24 (после звонка)', fields: [
+    { key: 'STAGE_MEETING', label: 'Этап «Встреча назначена»', placeholder: 'C1:PREPARATION', type: 'text' },
+    { key: 'STAGE_THINKING', label: 'Этап «Думает / перезвонит»', placeholder: 'C1:NEW', type: 'text' },
+    { key: 'STAGE_REJECTED', label: 'Этап «Отказ»', placeholder: 'LOSE', type: 'text' },
+    { key: 'STAGE_NO_ANSWER', label: 'Этап «Недозвон» (пусто = не менять)', placeholder: '', type: 'text' }
+  ]},
   { section: 'Расписание', fields: [
     { key: 'WORK_HOURS_START', label: 'Начало рабочего дня', placeholder: '09:00', type: 'text' },
     { key: 'WORK_HOURS_END', label: 'Конец рабочего дня', placeholder: '19:00', type: 'text' },

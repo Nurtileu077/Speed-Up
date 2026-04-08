@@ -113,7 +113,7 @@ export default function Dialer() {
   const [taskCreated, setTaskCreated] = useState(false)
   const [taskCreating, setTaskCreating] = useState(false)
   const [countdown, setCountdown] = useState(null)
-  const [dialCountdown, setDialCountdown] = useState(null)
+  const [settings, setSettings] = useState({})
 
   // Connected state
   const [connResult, setConnResult] = useState('')
@@ -124,18 +124,17 @@ export default function Dialer() {
 
   const timer = useTimer(screen === SCREEN.ACTIVE)
 
-  // Auto-dial countdown: when on DIALING screen, count down from 3 then auto-call
+  // Load settings
   useEffect(() => {
-    if (screen !== SCREEN.DIALING) { setDialCountdown(null); return }
-    setDialCountdown(3)
-  }, [screen, currentLead])
+    window.electronAPI?.db?.getSettings().then(s => setSettings(s || {})).catch(() => {})
+  }, [])
 
+  // Auto-dial immediately when DIALING screen appears
   useEffect(() => {
-    if (dialCountdown === null) return
-    if (dialCountdown <= 0) { handleStartCall(); return }
-    const t = setTimeout(() => setDialCountdown(c => c - 1), 1000)
-    return () => clearTimeout(t)
-  }, [dialCountdown])
+    if (screen !== SCREEN.DIALING || !currentLead) return
+    const phone = getPhone(currentLead)
+    if (phone) window.electronAPI?.dialer?.call(phone).catch(() => {})
+  }, [screen, currentLead])
 
   // Countdown auto-advance (no-answer)
   useEffect(() => {
@@ -172,7 +171,6 @@ export default function Dialer() {
     setTaskCreated(false)
     setTaskCreating(false)
     setCountdown(null)
-    setDialCountdown(null)
     setConnResult('')
     setConnWaText('')
     setConnWaSent(false)
@@ -201,16 +199,7 @@ export default function Dialer() {
     }
   }
 
-  async function handleStartCall() {
-    setDialCountdown(null)
-    const phone = getPhone(currentLead)
-    if (phone) {
-      try {
-        await window.electronAPI?.dialer?.call(phone)
-      } catch (err) {
-        console.warn('Auto-dial error:', err.message)
-      }
-    }
+  function handleStartCall() {
     setScreen(SCREEN.ACTIVE)
   }
 
@@ -260,25 +249,28 @@ export default function Dialer() {
     } catch {}
 
     const entityType = currentLead?.entityType || 'deal'
+    const name = getName(currentLead)
     const comment = formatNoAnswerComment(reason, attempt, nextCallAt)
     try { await window.electronAPI?.bitrix?.addComment(String(leadId), comment) } catch {}
 
-    if (nextCallAt && attempt < 6) {
-      try {
-        await window.electronAPI?.bitrix?.createTask({
-          TITLE: `Перезвонить — ${getName(currentLead)} (попытка #${attempt + 1})`,
-          DEADLINE: nextCallAt,
-          UF_CRM_TASK: [entityType === 'deal' ? `D_${leadId}` : `L_${leadId}`],
-          DESCRIPTION: `Автодозвон: предыдущий результат — ${reason}`
-        })
-      } catch {}
+    // Stage update
+    const noAnswerStage = settings?.STAGE_NO_ANSWER || ''
+    if (noAnswerStage) {
+      try { await window.electronAPI?.bitrix?.updateEntity(String(leadId), { STAGE_ID: noAnswerStage }, entityType) } catch {}
     }
 
-    if (attempt >= 6) {
-      try {
-        await window.electronAPI?.bitrix?.updateLead(String(leadId), { COMMENTS: 'Автодозвон: 6 попыток без ответа' })
-      } catch {}
-    }
+    // Task — always create
+    const crmLink = entityType === 'deal' ? `D_${leadId}` : `L_${leadId}`
+    const deadline = nextCallAt || (() => { const d = new Date(); d.setDate(d.getDate() + 1); d.setHours(9,0,0,0); return d.toISOString() })()
+    try {
+      await window.electronAPI?.bitrix?.createTask({
+        TITLE: `Перезвонить: ${name} (попытка #${attempt + 1})`,
+        RESPONSIBLE_ID: settings?.BITRIX_USER_ID || '1',
+        DEADLINE: deadline,
+        UF_CRM_TASK: [crmLink],
+        DESCRIPTION: comment
+      })
+    } catch {}
 
     setNaSaved(true)
     setCountdown(5)
@@ -349,12 +341,40 @@ export default function Dialer() {
       })
     } catch {}
 
+    const name = getName(currentLead)
     const comment = formatConnectedComment(connResult, timer.seconds)
     try { await window.electronAPI?.bitrix?.addComment(String(leadId), comment) } catch {}
 
-    const stageMap = { meeting: 'EXECUTING', thinking: 'PREPAYMENT_INVOICE', rejected: 'LOSE' }
-    if (connResult && stageMap[connResult]) {
-      try { await window.electronAPI?.bitrix?.updateLead(String(leadId), { STAGE_ID: stageMap[connResult] }) } catch {}
+    // Stage update from settings
+    const stageMap = {
+      meeting:  settings?.STAGE_MEETING  || '',
+      thinking: settings?.STAGE_THINKING || '',
+      rejected: settings?.STAGE_REJECTED || 'LOSE'
+    }
+    const newStage = connResult && stageMap[connResult]
+    if (newStage) {
+      try { await window.electronAPI?.bitrix?.updateEntity(String(leadId), { STAGE_ID: newStage }, entityType) } catch {}
+    }
+
+    // Task based on result
+    const crmLink = entityType === 'deal' ? `D_${leadId}` : `L_${leadId}`
+    const taskDefs = {
+      meeting:  { title: `Подготовка к встрече: ${name}`,   days: 1,  hour: 9 },
+      thinking: { title: `Следить за клиентом: ${name}`,    days: 2,  hour: 10 },
+      rejected: { title: `Финальный отказ — причина: ${name}`, days: 7, hour: 10 }
+    }
+    const td = connResult && taskDefs[connResult]
+    if (td) {
+      const d = new Date(); d.setDate(d.getDate() + td.days); d.setHours(td.hour, 0, 0, 0)
+      try {
+        await window.electronAPI?.bitrix?.createTask({
+          TITLE: td.title,
+          RESPONSIBLE_ID: settings?.BITRIX_USER_ID || '1',
+          DEADLINE: d.toISOString(),
+          UF_CRM_TASK: [crmLink],
+          DESCRIPTION: comment
+        })
+      } catch {}
     }
 
     if (activeCallId && timer.seconds >= 30) {
@@ -477,24 +497,31 @@ export default function Dialer() {
           </div>
         </button>
 
-        {dialCountdown !== null && dialCountdown > 0 ? (
-          <div className="bg-blue-600/20 border border-blue-500/40 rounded-xl px-5 py-4 text-center max-w-xs w-full">
-            <p className="text-blue-300 text-sm mb-1">Автодозвон через...</p>
-            <p className="text-5xl font-bold text-blue-200">{dialCountdown}</p>
+        <div className="bg-yellow-500/10 border border-yellow-500/30 rounded-xl px-5 py-4 text-center max-w-xs w-full">
+          <div className="flex items-center justify-center gap-2 text-yellow-400 mb-1">
+            <PhoneCall size={16} className="animate-pulse" />
+            <span className="text-sm font-medium">Идёт набор номера...</span>
           </div>
-        ) : (
-          <div className="bg-emerald-600/20 border border-emerald-500/40 rounded-xl px-5 py-3 text-sm text-emerald-400 text-center max-w-xs">
-            Соединение...
-          </div>
-        )}
+          <p className="text-xs text-slate-500">Когда клиент ответил — нажмите «Ответил»</p>
+        </div>
 
         <div className="flex flex-col gap-3 w-full max-w-xs">
           <button
             onClick={handleStartCall}
-            className="w-full text-lg py-4 flex items-center justify-center gap-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl font-semibold transition-all active:scale-95"
+            className="w-full text-lg py-4 flex items-center justify-center gap-2 bg-emerald-600 hover:bg-emerald-500 text-white rounded-xl font-bold transition-all active:scale-95"
           >
-            <Phone size={20} /> Позвонить сейчас
+            <Phone size={20} /> Ответил
           </button>
+          <div className="grid grid-cols-2 gap-2">
+            <button onClick={handleNoAnswer}
+              className="py-3 bg-slate-700 hover:bg-slate-600 text-slate-300 text-sm font-semibold rounded-xl transition-all flex items-center justify-center gap-1.5">
+              <PhoneOff size={14}/> Не берёт
+            </button>
+            <button onClick={handleNoAnswer}
+              className="py-3 bg-orange-600/20 hover:bg-orange-600/30 border border-orange-500/30 text-orange-300 text-sm font-semibold rounded-xl transition-all">
+              Занято
+            </button>
+          </div>
           <div className="flex gap-2">
             <button onClick={openInBitrix} className="flex-1 text-sm py-2.5 flex items-center justify-center gap-1.5 bg-slate-800 hover:bg-slate-700 border border-slate-700 text-slate-400 rounded-xl transition-all">
               <ExternalLink size={13} /> Bitrix24

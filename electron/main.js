@@ -241,6 +241,18 @@ ipcMain.handle('bitrix:updateLead', async (event, leadId, data) => {
   }
 })
 
+ipcMain.handle('bitrix:updateEntity', async (event, entityId, fields, entityType) => {
+  try {
+    const settings = require('../src/services/db-main').getSettings()
+    const bitrix = require('../src/services/bitrix-main')
+    bitrix.configure(settings)
+    return await bitrix.updateEntity(entityId, fields, entityType || 'deal')
+  } catch (err) {
+    console.error('bitrix:updateEntity error', err)
+    return { error: err.message }
+  }
+})
+
 ipcMain.handle('bitrix:testConnection', async () => {
   try {
     const settings = require('../src/services/db-main').getSettings()

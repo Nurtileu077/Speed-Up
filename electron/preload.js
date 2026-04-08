@@ -10,6 +10,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     createTask: (data) => ipcRenderer.invoke('bitrix:createTask', data),
     addComment: (leadId, text) => ipcRenderer.invoke('bitrix:addComment', leadId, text),
     updateLead: (leadId, data) => ipcRenderer.invoke('bitrix:updateLead', leadId, data),
+    updateEntity: (entityId, fields, entityType) => ipcRenderer.invoke('bitrix:updateEntity', entityId, fields, entityType),
     testConnection: () => ipcRenderer.invoke('bitrix:testConnection'),
     getPortalUrl: () => ipcRenderer.invoke('bitrix:getPortalUrl')
   },
