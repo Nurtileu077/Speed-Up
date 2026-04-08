@@ -55,11 +55,11 @@ export async function sipInit(config) {
       connection_recovery_max_interval: 30
     })
 
-    ua.on('connected',    () => emit('connected'))
-    ua.on('disconnected', () => emit('disconnected'))
-    ua.on('registered',   () => emit('registered'))
-    ua.on('unregistered', () => emit('unregistered'))
-    ua.on('registrationFailed', (e) => emit('error', `Ошибка регистрации: ${e.cause}`))
+    ua.on('connected',    () => { console.log('[SIP] WebSocket connected'); emit('connected') })
+    ua.on('disconnected', (e) => { console.error('[SIP] WebSocket disconnected', e?.data); emit('disconnected', e?.data?.message || '') })
+    ua.on('registered',   () => { console.log('[SIP] Registered OK'); emit('registered') })
+    ua.on('unregistered', () => { console.warn('[SIP] Unregistered'); emit('unregistered') })
+    ua.on('registrationFailed', (e) => { console.error('[SIP] Registration failed', e.cause); emit('error', `Ошибка регистрации: ${e.cause}`) })
 
     // Handle incoming calls (auto-reject for now)
     ua.on('newRTCSession', (data) => {

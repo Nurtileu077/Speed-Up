@@ -70,6 +70,8 @@ export default function Settings() {
   const [saved, setSaved] = useState(false)
   const [testing, setTesting] = useState(false)
   const [testResult, setTestResult] = useState(null)
+  const [sipTesting, setSipTesting] = useState(false)
+  const [sipTestResult, setSipTestResult] = useState(null)
 
   useEffect(() => {
     async function load() {
@@ -123,6 +125,45 @@ export default function Settings() {
     } finally {
       setTesting(false)
     }
+  }
+
+  async function handleTestSip() {
+    setSipTesting(true)
+    setSipTestResult(null)
+    const { sipInit, sipStop, setStatusHandler } = await import('../services/sipService')
+    let resolved = false
+
+    setStatusHandler((status, data) => {
+      if (resolved) return
+      if (status === 'registered') {
+        resolved = true
+        setSipTestResult({ ok: true, msg: 'Подключено и зарегистрировано!' })
+        setSipTesting(false)
+        sipStop()
+      } else if (status === 'error' || status === 'disconnected') {
+        resolved = true
+        setSipTestResult({ ok: false, msg: data || 'Нет связи с сервером. Проверьте WebSocket URL и порт.' })
+        setSipTesting(false)
+        sipStop()
+      } else if (status === 'unregistered') {
+        resolved = true
+        setSipTestResult({ ok: false, msg: 'Сервер доступен, но регистрация провалилась. Проверьте логин/пароль.' })
+        setSipTesting(false)
+        sipStop()
+      }
+    })
+
+    await sipInit({ ...values, SIP_WS_URL: values.SIP_WS_URL, SIP_USERNAME: values.SIP_USERNAME, SIP_PASSWORD: values.SIP_PASSWORD, SIP_SERVER: values.SIP_SERVER })
+
+    // Timeout after 8s
+    setTimeout(() => {
+      if (!resolved) {
+        resolved = true
+        setSipTestResult({ ok: false, msg: 'Таймаут — сервер не отвечает за 8 секунд. Проверьте WebSocket URL.' })
+        setSipTesting(false)
+        sipStop()
+      }
+    }, 8000)
   }
 
   return (
@@ -187,6 +228,33 @@ export default function Settings() {
                     )}
                   </div>
                 ))}
+
+                {/* Test SIP connection */}
+                {section === 'SIP (встроенный телефон)' && (
+                  <div>
+                    <button
+                      onClick={handleTestSip}
+                      disabled={sipTesting || !values.SIP_WS_URL || !values.SIP_USERNAME}
+                      className="btn-ghost text-sm flex items-center gap-2"
+                    >
+                      {sipTesting ? <Loader size={14} className="animate-spin" /> : null}
+                      {sipTesting ? 'Проверка подключения...' : 'Проверить SIP соединение'}
+                    </button>
+                    {sipTestResult && (
+                      <div className={`mt-3 flex items-start gap-2 text-sm px-3 py-2.5 rounded-lg border ${
+                        sipTestResult.ok
+                          ? 'bg-emerald-600/10 border-emerald-600/20 text-emerald-400'
+                          : 'bg-red-600/10 border-red-600/20 text-red-400'
+                      }`}>
+                        {sipTestResult.ok
+                          ? <CheckCircle size={15} className="flex-shrink-0 mt-0.5" />
+                          : <XCircle size={15} className="flex-shrink-0 mt-0.5" />
+                        }
+                        <span>{sipTestResult.msg}</span>
+                      </div>
+                    )}
+                  </div>
+                )}
 
                 {/* Test connection button for Bitrix section */}
                 {section === 'Bitrix24' && (
