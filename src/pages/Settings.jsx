@@ -99,6 +99,8 @@ export default function Settings() {
       }
       setSaved(true)
       setTimeout(() => setSaved(false), 3000)
+      // Re-init SIP if credentials changed
+      window.dispatchEvent(new CustomEvent('sip-reinit', { detail: values }))
     } catch (err) {
       console.error('Save failed:', err)
     } finally {

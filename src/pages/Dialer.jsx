@@ -103,7 +103,7 @@ export default function Dialer() {
   const [error, setError] = useState('')
   const [refreshing, setRefreshing] = useState(false)
 
-  const { sipSt, sipLabel, call: sipCall, hangup: sipHangup } = useSip({
+  const { sipSt, sipLabel, call: sipCall, hangup: sipHangup, reconnect: sipReconnect } = useSip({
     onCallActive: () => { if (screen === SCREEN.DIALING) setScreen(SCREEN.ACTIVE) },
     onCallEnded:  () => { if (screen === SCREEN.DIALING) handleNoAnswer() },
     onCallFailed: () => { if (screen === SCREEN.DIALING) handleNoAnswer() }
@@ -461,6 +461,28 @@ export default function Dialer() {
             <p className="text-sm text-red-400">{error}</p>
           </div>
         )}
+
+        {/* SIP status */}
+        <div className={`flex items-center justify-between w-full max-w-xs px-4 py-2.5 rounded-xl border ${
+          sipSt === 'registered' ? 'bg-emerald-600/10 border-emerald-600/20' :
+          sipSt === 'unconfigured' ? 'bg-slate-800 border-slate-700' :
+          ['connecting','connected'].includes(sipSt) ? 'bg-yellow-600/10 border-yellow-600/20' :
+          'bg-red-600/10 border-red-600/20'
+        }`}>
+          <div className="flex items-center gap-2">
+            <span className={`w-2 h-2 rounded-full ${
+              sipSt === 'registered' ? 'bg-emerald-400 animate-pulse' :
+              ['connecting','connected'].includes(sipSt) ? 'bg-yellow-400 animate-pulse' :
+              sipSt === 'unconfigured' ? 'bg-slate-500' : 'bg-red-400'
+            }`}/>
+            <span className={`text-xs font-medium ${sipLabel.color}`}>{sipLabel.text}</span>
+          </div>
+          {sipSt !== 'registered' && (
+            <button onClick={sipReconnect} className="text-xs text-slate-500 hover:text-slate-300 transition-colors">
+              Переподключить
+            </button>
+          )}
+        </div>
 
         <div className="flex flex-col gap-3 w-full max-w-xs">
           <button
